@@ -8,6 +8,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -40,6 +41,11 @@ import pl.sampler.app.audio.SampleSlot
 import pl.sampler.app.audio.SlotStatus
 import pl.sampler.app.audio.SynthPresets
 
+// Układ: siatka kafelków (PAD_COLUMNS kolumn) + deck. Zmiana wag zmienia proporcje i rozmiar kafelków.
+private const val PAD_COLUMNS = 6
+private const val PADS_WEIGHT = 3.2f
+private const val DECK_WEIGHT = 1f
+
 private val SlotColors = listOf(
     Color(0xFF00E5FF),
     Color(0xFF76FF03),
@@ -53,6 +59,7 @@ fun SamplerScreen(engine: AudioEngine) {
     val activeLoops = engine.activeLoops
 
     var edgeGlow by remember { mutableStateOf(true) }
+    var doubleTapLoop by remember { mutableStateOf(true) }
     var bpm by remember { mutableStateOf(SynthPresets.BASE_BPM.toFloat()) }
     var semis by remember { mutableStateOf(0f) }
 
@@ -70,7 +77,7 @@ fun SamplerScreen(engine: AudioEngine) {
         }
     }
 
-    // --- wybór pliku ---
+    // --- wybór pliku do slotu REC ---
     var pendingFileSlot by remember { mutableStateOf(-1) }
     val filePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -78,6 +85,13 @@ fun SamplerScreen(engine: AudioEngine) {
         val i = pendingFileSlot
         pendingFileSlot = -1
         if (uri != null && i >= 0) engine.loadFile(context, engine.slots[i], uri)
+    }
+
+    // --- wybór tracka na deck ---
+    val deckPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) engine.loadDeck(context, uri)
     }
 
     fun onMic(slot: SampleSlot) {
@@ -103,13 +117,13 @@ fun SamplerScreen(engine: AudioEngine) {
             .fillMaxSize()
             .background(Brush.verticalGradient(listOf(Color(0xFF0D0E12), Color(0xFF040506))))
             .safeDrawingPadding()
-            .padding(8.dp)
+            .padding(6.dp)
     ) {
-        // ---------- górny pasek ----------
+        // ---------- górny pasek: tytuł, miernik, pokrętła, przełączniki ----------
         Row(
             Modifier
                 .fillMaxWidth()
-                .height(38.dp)
+                .height(48.dp)
                 .consolePanel(8.dp)
                 .padding(horizontal = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -123,126 +137,111 @@ fun SamplerScreen(engine: AudioEngine) {
                 fontSize = 15.sp,
                 letterSpacing = 4.sp,
             )
-            Text(
-                "MK1",
-                color = ConsoleColors.Amber,
-                fontFamily = ConsoleFont,
-                fontWeight = FontWeight.Bold,
-                fontSize = 10.sp,
-            )
             LevelMeter(engine, Modifier.weight(1f).height(14.dp))
-            ConsoleButton("EDGE GLOW", ConsoleColors.Green, edgeGlow, Modifier.width(88.dp).height(24.dp)) {
+            CompactKnob(
+                label = "TEMPO",
+                value = bpm,
+                minValue = 60f,
+                maxValue = 180f,
+                defaultValue = SynthPresets.BASE_BPM.toFloat(),
+                step = 1f,
+                readout = "${bpm.toInt()} BPM",
+                color = ConsoleColors.Cyan,
+                onChange = {
+                    bpm = it
+                    engine.setTempo(it / SynthPresets.BASE_BPM)
+                },
+            )
+            CompactKnob(
+                label = "KEY",
+                value = semis,
+                minValue = -12f,
+                maxValue = 12f,
+                defaultValue = 0f,
+                step = 1f,
+                readout = (if (semis > 0f) "+" else "") + "${semis.toInt()} ST",
+                color = Color(0xFFFF9100),
+                onChange = {
+                    semis = it
+                    engine.setPitch(2.0.pow(it / 12.0))
+                },
+            )
+            ConsoleButton("GLOW", ConsoleColors.Green, edgeGlow, Modifier.width(54.dp).height(24.dp)) {
                 edgeGlow = !edgeGlow
             }
-            ConsoleButton("STOP ALL", ConsoleColors.Red, false, Modifier.width(78.dp).height(24.dp)) {
+            ConsoleButton("2xTAP", ConsoleColors.Amber, doubleTapLoop, Modifier.width(58.dp).height(24.dp)) {
+                doubleTapLoop = !doubleTapLoop
+            }
+            ConsoleButton("STOP", ConsoleColors.Red, false, Modifier.width(54.dp).height(24.dp)) {
                 engine.stopAll()
             }
         }
 
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(6.dp))
 
         Row(
             Modifier.weight(1f).fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            // ---------- lewa strona: presety 4x3 ----------
+            // ---------- siatka: presety + sloty REC w ostatnim rzędzie ----------
             Column(
                 Modifier
-                    .weight(3f)
+                    .weight(PADS_WEIGHT)
                     .fillMaxHeight()
                     .consolePanel()
-                    .padding(8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+                    .padding(6.dp),
+                verticalArrangement = Arrangement.spacedBy(5.dp),
             ) {
-                engine.pads.chunked(4).forEach { rowPads ->
+                val padRows = engine.pads.chunked(PAD_COLUMNS)
+                padRows.forEachIndexed { idx, rowPads ->
                     Row(
                         Modifier.weight(1f).fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
                     ) {
                         rowPads.forEach { pad ->
                             PadTile(
                                 label = pad.label,
-                                tag = if (pad.loop) "LOOP" else null,
+                                tag = if (pad.id in engine.loopModes) "LOOP" else null,
                                 color = Color(pad.colorArgb),
                                 active = pad.id in activeLoops,
                                 edgeGlow = edgeGlow,
                                 enabled = true,
+                                doubleTapEnabled = doubleTapLoop,
                                 modifier = Modifier.weight(1f).fillMaxHeight(),
                                 onPress = { engine.press(pad) },
+                                onDoubleTap = { engine.toggleLoopMode(pad) },
                             )
+                        }
+                        if (idx == padRows.lastIndex) {
+                            engine.slots.forEach { slot ->
+                                SlotTile(
+                                    engine = engine,
+                                    slot = slot,
+                                    color = SlotColors[slot.index],
+                                    active = slot.padId in activeLoops,
+                                    edgeGlow = edgeGlow,
+                                    doubleTapLoop = doubleTapLoop,
+                                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                                    onMic = { onMic(slot) },
+                                    onFile = { onFile(slot) },
+                                )
+                            }
                         }
                     }
                 }
             }
 
-            // ---------- prawa strona: pokrętła + sloty REC ----------
-            Column(
-                Modifier.weight(2.1f).fillMaxHeight(),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(100.dp)
-                        .consolePanel()
-                        .padding(6.dp),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Knob(
-                        label = "TEMPO",
-                        value = bpm,
-                        minValue = 60f,
-                        maxValue = 180f,
-                        defaultValue = SynthPresets.BASE_BPM.toFloat(),
-                        step = 1f,
-                        readout = "${bpm.toInt()} BPM",
-                        color = ConsoleColors.Cyan,
-                        onChange = {
-                            bpm = it
-                            engine.setTempo(it / SynthPresets.BASE_BPM)
-                        },
-                    )
-                    Knob(
-                        label = "KEY",
-                        value = semis,
-                        minValue = -12f,
-                        maxValue = 12f,
-                        defaultValue = 0f,
-                        step = 1f,
-                        readout = (if (semis > 0f) "+" else "") + "${semis.toInt()} ST",
-                        color = Color(0xFFFF9100),
-                        onChange = {
-                            semis = it
-                            engine.setPitch(2.0.pow(it / 12.0))
-                        },
-                    )
-                }
-
-                engine.slots.chunked(2).forEach { rowSlots ->
-                    Row(
-                        Modifier.weight(1f).fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        rowSlots.forEach { slot ->
-                            SlotTile(
-                                engine = engine,
-                                slot = slot,
-                                color = SlotColors[slot.index],
-                                active = slot.padId in activeLoops,
-                                edgeGlow = edgeGlow,
-                                modifier = Modifier.weight(1f).fillMaxHeight(),
-                                onMic = { onMic(slot) },
-                                onFile = { onFile(slot) },
-                            )
-                        }
-                    }
-                }
-            }
+            // ---------- deck winylowy ----------
+            DeckPanel(
+                engine = engine,
+                onLoad = { deckPicker.launch(arrayOf("audio/*")) },
+                modifier = Modifier.weight(DECK_WEIGHT).fillMaxHeight(),
+            )
         }
     }
 }
 
+/** Kafelek REC: pad + małe przyciski MIC / FILE / CLR nałożone na dole. */
 @Composable
 private fun SlotTile(
     engine: AudioEngine,
@@ -250,6 +249,7 @@ private fun SlotTile(
     color: Color,
     active: Boolean,
     edgeGlow: Boolean,
+    doubleTapLoop: Boolean,
     modifier: Modifier,
     onMic: () -> Unit,
     onFile: () -> Unit,
@@ -260,12 +260,12 @@ private fun SlotTile(
     val tag = when (status) {
         SlotStatus.EMPTY -> "EMPTY"
         SlotStatus.RECORDING ->
-            String.format(Locale.US, "REC %.1f/%d s", slot.seconds, AudioEngine.MAX_SECONDS)
+            String.format(Locale.US, "%.1f/%d s", slot.seconds, AudioEngine.MAX_SECONDS)
         SlotStatus.LOADING -> "LOADING..."
-        SlotStatus.READY -> slot.name.take(16) + if (slot.loop) " LOOP" else ""
+        SlotStatus.READY -> slot.name.take(12) + if (slot.loop) " LOOP" else ""
     }
 
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Box(modifier) {
         PadTile(
             label = "REC ${slot.index + 1}",
             tag = tag,
@@ -273,26 +273,31 @@ private fun SlotTile(
             active = active || recording,
             edgeGlow = edgeGlow,
             enabled = status == SlotStatus.READY,
-            modifier = Modifier.weight(1f).fillMaxWidth(),
+            doubleTapEnabled = doubleTapLoop,
+            modifier = Modifier.fillMaxSize(),
             onPress = { engine.pressSlot(slot) },
+            onDoubleTap = { engine.toggleSlotLoopMode(slot) },
         )
         Row(
-            Modifier.fillMaxWidth().height(26.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 4.dp)
+                .height(20.dp),
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
         ) {
-            ConsoleButton("MIC", ConsoleColors.Red, recording, Modifier.weight(1f).fillMaxHeight()) {
-                onMic()
-            }
+            ConsoleButton(
+                "MIC", ConsoleColors.Red, recording,
+                Modifier.weight(1f).fillMaxHeight(), fontSize = 8.sp,
+            ) { onMic() }
             ConsoleButton(
                 "FILE", ConsoleColors.Amber, status == SlotStatus.LOADING,
-                Modifier.weight(1f).fillMaxHeight(),
+                Modifier.weight(1f).fillMaxHeight(), fontSize = 8.sp,
             ) { onFile() }
-            ConsoleButton("LOOP", ConsoleColors.Green, slot.loop, Modifier.weight(1f).fillMaxHeight()) {
-                engine.setSlotLoop(slot, !slot.loop)
-            }
-            ConsoleButton("CLR", ConsoleColors.Label, false, Modifier.weight(1f).fillMaxHeight()) {
-                engine.clearSlot(slot)
-            }
+            ConsoleButton(
+                "CLR", ConsoleColors.Label, false,
+                Modifier.weight(1f).fillMaxHeight(), fontSize = 8.sp,
+            ) { engine.clearSlot(slot) }
         }
     }
 }

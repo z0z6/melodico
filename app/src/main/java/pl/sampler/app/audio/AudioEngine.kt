@@ -20,6 +20,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sign
@@ -30,17 +31,22 @@ import kotlin.math.tanh
  *
  * - One-shoty: odtwarzanie z interpolacją; tonacja zmienia prędkość (jak winyl).
  * - Pętle: granularny time-stretch + pitch-shift (dwa nakładające się ziarna z oknem Hanna),
- *   dzięki czemu TEMPO i TONACJA działają niezależnie. Przy tempie 120 i tonacji 0 wynik
- *   jest bit-w-bit identyczny z oryginałem.
- * - Pętle presetów są zsynchronizowane do wspólnego zegara (masterPos).
+ *   dzięki czemu TEMPO i TONACJA działają niezależnie. Przy 120 BPM i tonacji 0 wynik jest
+ *   identyczny z oryginałem. Pętle presetów są zsynchronizowane do wspólnego zegara.
+ * - Deck winylowy: długi track (16-bit mono) odtwarzany z płynną prędkością. Dotknięcie płyty
+ *   przejmuje kontrolę nad pozycją (scratch), puszczenie przywraca obroty silnika z bezwładnością.
  */
 class AudioEngine {
 
     val pads: List<Pad> = SynthPresets.buildPads()
     val slots: List<SampleSlot> = List(4) { SampleSlot(it) }
 
-    /** Id kafelków z włączoną pętlą (obserwowane przez Compose). Zmieniane tylko z wątku UI. */
+    /** Id kafelków z aktualnie grającą pętlą (obserwowane przez Compose). Tylko wątek UI. */
     var activeLoops: Set<Int> by mutableStateOf(emptySet())
+        private set
+
+    /** Id kafelków w trybie pętli (przełączane podwójnym kliknięciem). Tylko wątek UI. */
+    var loopModes: Set<Int> by mutableStateOf(pads.filter { it.loop }.map { it.id }.toSet())
         private set
 
     /** Szczytowy poziom ostatniego bloku (do wskaźnika wysterowania). */
@@ -84,7 +90,7 @@ class AudioEngine {
         (0.5 * (1.0 - cos(2.0 * PI * it / GRAIN))).toFloat()
     }
 
-    // ---------- API dla UI: odtwarzanie ----------
+    // ================= odtwarzanie kafelków =================
 
     fun setTempo(ratio: Double) {
         tempoRatio = ratio.coerceIn(0.25, 4.0)
@@ -94,13 +100,20 @@ class AudioEngine {
         pitchRatio = ratio.coerceIn(0.25, 4.0)
     }
 
-    /** Wywoływane w momencie dotknięcia kafelka presetu. */
+    /** Dotknięcie kafelka presetu: w trybie pętli włącza/wyłącza pętlę, inaczej odpala jednorazowo. */
     fun press(pad: Pad) {
-        if (pad.loop) toggleLoop(pad.id, pad.data, syncMaster = true)
+        if (pad.id in loopModes) toggleLoop(pad.id, pad.data, syncMaster = true)
         else addOneShot(pad.id, pad.data)
     }
 
-    /** Wywoływane w momencie dotknięcia kafelka REC. */
+    /** Podwójne kliknięcie: przełącza tryb kafelka (one-shot / pętla). Przejście na pętlę od razu ją startuje. */
+    fun toggleLoopMode(pad: Pad) {
+        stopVoices(pad.id)
+        val nowLoop = pad.id !in loopModes
+        loopModes = if (nowLoop) loopModes + pad.id else loopModes - pad.id
+        if (nowLoop) toggleLoop(pad.id, pad.data, syncMaster = true)
+    }
+
     fun pressSlot(slot: SampleSlot) {
         val d = slot.data ?: return
         if (slot.status != SlotStatus.READY) return
@@ -108,9 +121,12 @@ class AudioEngine {
         else addOneShot(slot.padId, d)
     }
 
-    fun setSlotLoop(slot: SampleSlot, loop: Boolean) {
-        slot.loop = loop
-        if (!loop) stopVoices(slot.padId) // wyłączenie trybu pętli zatrzymuje trwającą pętlę
+    fun toggleSlotLoopMode(slot: SampleSlot) {
+        val d = slot.data ?: return
+        if (slot.status != SlotStatus.READY) return
+        stopVoices(slot.padId)
+        slot.loop = !slot.loop
+        if (slot.loop) toggleLoop(slot.padId, d, syncMaster = false)
     }
 
     fun clearSlot(slot: SampleSlot) {
@@ -118,12 +134,14 @@ class AudioEngine {
         stopVoices(slot.padId)
         slot.data = null
         slot.name = ""
+        slot.loop = false
         slot.status = SlotStatus.EMPTY
     }
 
     fun stopAll() {
         voices.forEach { it.stopping = true }
         activeLoops = emptySet()
+        dPlayFlag = false
     }
 
     @Synchronized
@@ -137,6 +155,8 @@ class AudioEngine {
     @Synchronized
     fun stop() {
         stopRecordingBlocking()
+        dPlayFlag = false
+        dTouching = false
         if (!running) return
         running = false
         thread?.join()
@@ -145,7 +165,103 @@ class AudioEngine {
         activeLoops = emptySet()
     }
 
-    // ---------- API dla UI: nagrywanie i pliki ----------
+    // ================= deck winylowy =================
+
+    @Volatile private var dData: ShortArray? = null
+    @Volatile private var dPlayFlag = false
+    @Volatile private var dTouching = false
+    @Volatile private var dTarget = 0.0
+    @Volatile private var dPitch = 1.0
+    @Volatile private var dVol = 0.8
+    @Volatile private var dLoop = false
+    @Volatile private var dSeek = -1.0
+
+    private var dPos = 0.0  // tylko wątek audio
+    private var dRate = 0.0 // tylko wątek audio
+
+    var deckStatus by mutableStateOf(SlotStatus.EMPTY)
+        private set
+    var deckName by mutableStateOf("")
+        private set
+
+    @Volatile var deckPosFrames: Double = 0.0
+        private set
+    @Volatile var deckLengthFrames: Int = 0
+        private set
+
+    val deckPlaying: Boolean get() = dPlayFlag
+    val deckLoop: Boolean get() = dLoop
+
+    /** Wczytuje track (max [DECK_MAX_SECONDS] s, mono) na deck. */
+    fun loadDeck(context: Context, uri: Uri) {
+        if (deckStatus == SlotStatus.LOADING) return
+        dPlayFlag = false
+        deckStatus = SlotStatus.LOADING
+        val app = context.applicationContext
+        Thread({
+            val data = AudioDecoder.decodeTrack(app, uri, DECK_MAX_SECONDS)
+            val name = AudioDecoder.displayName(app, uri) ?: "TRACK"
+            main.post {
+                if (data == null || data.size < MIN_SAMPLE_FRAMES) {
+                    Toast.makeText(app, "Nie udało się wczytać tracka", Toast.LENGTH_SHORT).show()
+                    deckStatus = if (dData != null) SlotStatus.READY else SlotStatus.EMPTY
+                } else {
+                    dPlayFlag = false
+                    dData = data
+                    deckLengthFrames = data.size
+                    dSeek = 0.0
+                    deckPosFrames = 0.0
+                    deckName = name
+                    deckStatus = SlotStatus.READY
+                }
+            }
+        }, "deck-loader").start()
+    }
+
+    fun deckTogglePlay() {
+        if (dData == null || deckStatus != SlotStatus.READY) return
+        if (!dPlayFlag && deckPosFrames >= deckLengthFrames - 2) dSeek = 0.0
+        dPlayFlag = !dPlayFlag
+    }
+
+    /** CUE: zatrzymuje i wraca na początek tracka. */
+    fun deckCue() {
+        if (dData == null) return
+        dPlayFlag = false
+        dSeek = 0.0
+    }
+
+    fun deckToggleLoop() {
+        dLoop = !dLoop
+    }
+
+    /** Fader pitch w procentach (np. -16..+16). */
+    fun deckSetPitch(percent: Float) {
+        dPitch = 1.0 + percent / 100.0
+    }
+
+    fun deckSetVolume(v: Float) {
+        dVol = v.coerceIn(0f, 1f).toDouble()
+    }
+
+    /** Palec dotyka płyty (true) lub ją puszcza (false). */
+    fun deckTouch(down: Boolean) {
+        if (down) {
+            dTarget = deckPosFrames
+            dTouching = dData != null
+        } else {
+            dTouching = false
+        }
+    }
+
+    /** Obrót płyty o [revolutions] obrotów (dodatnio = zgodnie z ruchem wskazówek zegara = do przodu). */
+    fun deckScratch(revolutions: Double) {
+        if (!dTouching) return
+        val len = deckLengthFrames
+        dTarget = (dTarget + revolutions * DECK_FRAMES_PER_REV).coerceIn(0.0, max(0, len - 1).toDouble())
+    }
+
+    // ================= nagrywanie i pliki =================
 
     private var recordThread: Thread? = null
     @Volatile private var recordStop = false
@@ -192,7 +308,7 @@ class AudioEngine {
         }, "sample-loader").start()
     }
 
-    // ---------- wnętrze: głosy ----------
+    // ================= wnętrze: głosy =================
 
     private fun addOneShot(padId: Int, data: FloatArray) {
         if (voices.size < MAX_VOICES) {
@@ -283,7 +399,7 @@ class AudioEngine {
         main.post { completeSlot(slot, result, name) }
     }
 
-    // ---------- wnętrze: wątek audio ----------
+    // ================= wątek audio =================
 
     private fun createTrack(): AudioTrack {
         val minBytes = AudioTrack.getMinBufferSize(
@@ -337,8 +453,9 @@ class AudioEngine {
             else mixOneShot(v, buf, frames, pitch)
             if (v.done) anyDone = true
         }
-
         if (anyDone) voices.removeIf { it.done }
+
+        mixDeck(buf, frames)
 
         var peak = 0f
         for (i in 0 until frames) {
@@ -426,6 +543,70 @@ class AudioEngine {
         if (fading) v.done = true
     }
 
+    /** Deck: płynna prędkość odtwarzania + scratch sterowany pozycją palca. */
+    private fun mixDeck(buf: FloatArray, frames: Int) {
+        val data = dData ?: return
+        val len = data.size
+        if (len < 2) return
+
+        val seek = dSeek
+        if (seek >= 0.0) {
+            dPos = seek.coerceIn(0.0, len - 1.0)
+            dSeek = -1.0
+            dRate = 0.0
+            deckPosFrames = dPos
+        }
+
+        val touching = dTouching
+        val playFlag = dPlayFlag
+        val loop = dLoop
+        val vol = dVol.toFloat()
+        val startRate = dRate
+
+        val endRate = if (touching) {
+            // płyta podąża za palcem; wygładzanie na kilka bloków usuwa "schodki" ze zdarzeń dotyku
+            ((dTarget - dPos) / (frames * SCRATCH_SMOOTH)).coerceIn(-MAX_SCRATCH_RATE, MAX_SCRATCH_RATE)
+        } else {
+            // silnik: rozpędza się szybko, hamuje wolniej (bezwładność talerza)
+            val motor = if (playFlag) dPitch else 0.0
+            val tau = if (playFlag) 0.10 else 0.30
+            startRate + (motor - startRate) * (1.0 - exp(-frames / (SynthPresets.SAMPLE_RATE * tau)))
+        }
+
+        var pos = dPos
+        var ended = false
+        for (i in 0 until frames) {
+            val k = (i + 1).toDouble() / frames
+            val rate = startRate + (endRate - startRate) * k
+            val i0 = pos.toInt()
+            if (i0 >= 0 && i0 < len - 1) {
+                val f = (pos - i0).toFloat()
+                val s = (data[i0] * (1f - f) + data[i0 + 1] * f) / 32768f
+                // przy zatrzymanej płycie sygnał gaśnie (bez stałej składowej)
+                val amp = min(1f, abs(rate).toFloat() * 6f)
+                buf[i] += s * vol * amp * DECK_GAIN
+            }
+            pos += rate
+            if (pos >= len - 1.0) {
+                if (loop && !touching) {
+                    pos -= (len - 1.0)
+                } else {
+                    pos = len - 1.0
+                    if (!touching) {
+                        ended = true
+                        break
+                    }
+                }
+            } else if (pos < 0.0) {
+                pos = 0.0
+            }
+        }
+        dPos = pos
+        dRate = if (ended) 0.0 else endRate
+        deckPosFrames = pos
+        if (ended) dPlayFlag = false
+    }
+
     /** Miękki limiter: liniowo do 0.7, powyżej łagodnie nasyca do 1.0. */
     private fun softClip(x: Float): Float {
         val a = abs(x)
@@ -433,16 +614,25 @@ class AudioEngine {
     }
 
     companion object {
-        /** Maksymalna długość nagrania / wczytanego pliku w sekundach. */
+        /** Maksymalna długość nagrania / wczytanego pliku na kafelku REC (s). */
         const val MAX_SECONDS = 10
+
+        /** Maksymalna długość tracka na decku (s). */
+        const val DECK_MAX_SECONDS = 360
+
+        /** Liczba próbek na jeden obrót płyty 33 1/3 obr./min. */
+        const val DECK_FRAMES_PER_REV = 79380.0
 
         private const val CHUNK_FRAMES = 256
         private const val MAX_VOICES = 32
         private const val GAIN = 0.8f
+        private const val DECK_GAIN = 0.85f
         private const val GRAIN = 2048
         private const val HOP = GRAIN / 2
         private const val FADE_IN = 128
         private const val MIN_SAMPLE_FRAMES = 4410 // 0.1 s
+        private const val MAX_SCRATCH_RATE = 8.0
+        private const val SCRATCH_SMOOTH = 3.0
         private val MASTER_WRAP = SynthPresets.BAR_FRAMES * 8.0
     }
 }

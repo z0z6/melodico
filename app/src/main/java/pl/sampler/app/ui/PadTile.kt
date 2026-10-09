@@ -1,5 +1,6 @@
 package pl.sampler.app.ui
 
+import android.os.SystemClock
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -32,9 +33,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.max
 
+/** Maksymalny odstęp między dwoma dotknięciami, żeby liczyły się jako podwójne kliknięcie. */
+private const val DOUBLE_TAP_MS = 280L
+
 /**
  * Pad w stylu kontrolera DJ: ciemna gumowa powierzchnia, dioda LED u góry,
  * po dotknięciu (jeśli [edgeGlow]) świecące krawędzie, dla aktywnej pętli stała poświata.
+ *
+ * Reakcja na pierwsze dotknięcie jest natychmiastowa. Jeśli drugie dotknięcie przyjdzie w ciągu
+ * [DOUBLE_TAP_MS] i [doubleTapEnabled] jest włączone, zamiast [onPress] wywoływane jest [onDoubleTap].
  */
 @Composable
 fun PadTile(
@@ -44,11 +51,16 @@ fun PadTile(
     active: Boolean,
     edgeGlow: Boolean,
     enabled: Boolean,
+    doubleTapEnabled: Boolean,
     modifier: Modifier = Modifier,
     onPress: () -> Unit,
+    onDoubleTap: () -> Unit,
 ) {
     var pressed by remember { mutableStateOf(false) }
     val currentOnPress by rememberUpdatedState(onPress)
+    val currentOnDoubleTap by rememberUpdatedState(onDoubleTap)
+    val currentDoubleEnabled by rememberUpdatedState(doubleTapEnabled)
+    val lastDown = remember { LongArray(1) }
 
     val on = pressed || active
     val lit by animateFloatAsState(
@@ -92,7 +104,7 @@ fun PadTile(
                 // dioda LED
                 val ledW = size.width * 0.34f
                 val ledH = 3.dp.toPx()
-                val ledTop = 7.dp.toPx()
+                val ledTop = 6.dp.toPx()
                 val ledLeft = (size.width - ledW) / 2f
                 if (lit > 0f) {
                     val pad = 4.dp.toPx()
@@ -115,9 +127,13 @@ fun PadTile(
                 if (enabled) {
                     // reakcja na samo dotknięcie (bez czekania na puszczenie) = niższe opóźnienie
                     detectTapGestures(onPress = {
+                        val now = SystemClock.uptimeMillis()
+                        val delta = now - lastDown[0]
+                        val isDouble = currentDoubleEnabled && (delta in 1L..DOUBLE_TAP_MS)
+                        lastDown[0] = if (isDouble) 0L else now
                         pressed = true
                         try {
-                            currentOnPress()
+                            if (isDouble) currentOnDoubleTap() else currentOnPress()
                             tryAwaitRelease()
                         } finally {
                             pressed = false
@@ -133,7 +149,7 @@ fun PadTile(
                 color = if (on) Color.White else Color(0xFFC5CBD6),
                 fontFamily = ConsoleFont,
                 fontWeight = FontWeight.Bold,
-                fontSize = 13.sp,
+                fontSize = 12.sp,
                 letterSpacing = 1.sp,
                 maxLines = 1,
             )

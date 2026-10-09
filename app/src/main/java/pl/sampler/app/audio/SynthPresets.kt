@@ -28,6 +28,7 @@ object SynthPresets {
         val openHat = synthHat(0.35, 11.0)
         val clap = synthClap()
         val tom = synthTom()
+        val cowbell = synthCowbell()
 
         val beat = synthBeatLoop(kick, snare, closedHat)
         val house = synthHouseLoop(kick, clap, openHat)
@@ -35,22 +36,24 @@ object SynthPresets {
         val hats16 = synthHats16Loop(closedHat)
         val arp = synthArpLoop()
         val chord = synthChordLoop()
+        val shaker = synthShakerLoop()
 
         return listOf(
-            // one-shoty (ciepłe kolory)
+            // one-shoty (ciepłe kolory); pętle (zimne kolory). Tryb można zmienić podwójnym kliknięciem.
             Pad(0, "KICK", kick, false, 0xFFFF5252),
             Pad(1, "SNARE", snare, false, 0xFFFF9100),
             Pad(2, "HAT", closedHat, false, 0xFFFFD740),
             Pad(3, "OPEN HAT", openHat, false, 0xFFC6FF00),
             Pad(4, "CLAP", clap, false, 0xFFFF4081),
             Pad(5, "TOM", tom, false, 0xFF69F0AE),
-            // pętle (zimne kolory)
-            Pad(6, "BEAT", beat, true, 0xFF40C4FF),
-            Pad(7, "HOUSE", house, true, 0xFF448AFF),
-            Pad(8, "BASS", bass, true, 0xFFB388FF),
-            Pad(9, "HATS 16", hats16, true, 0xFFEA80FC),
-            Pad(10, "ARP", arp, true, 0xFF18FFFF),
-            Pad(11, "CHORD", chord, true, 0xFF64FFDA),
+            Pad(6, "COWBELL", cowbell, false, 0xFFFF6E40),
+            Pad(7, "BEAT", beat, true, 0xFF40C4FF),
+            Pad(8, "HOUSE", house, true, 0xFF448AFF),
+            Pad(9, "BASS", bass, true, 0xFFB388FF),
+            Pad(10, "HATS 16", hats16, true, 0xFFEA80FC),
+            Pad(11, "ARP", arp, true, 0xFF18FFFF),
+            Pad(12, "CHORD", chord, true, 0xFF64FFDA),
+            Pad(13, "SHAKER", shaker, true, 0xFF80D8FF),
         )
     }
 
@@ -219,6 +222,43 @@ object SynthPresets {
                 s += sin(w) + 0.3 * sin(2 * w) + 0.12 * sin(3 * w)
             }
             out[i] = (s * (0.85 + 0.15 * sin(2 * PI * t / seconds))).toFloat()
+        }
+        return normalize(out, 0.55f)
+    }
+
+    private fun synthCowbell(): FloatArray {
+        val n = (SAMPLE_RATE * 0.35).toInt()
+        val out = FloatArray(n)
+        for (i in 0 until n) {
+            val t = i.toDouble() / SAMPLE_RATE
+            val a = if (sin(2 * PI * 540.0 * t) >= 0.0) 1.0 else -1.0
+            val b = if (sin(2 * PI * 810.0 * t) >= 0.0) 1.0 else -1.0
+            val env = exp(-t * 11.0) * min(1.0, i / (SAMPLE_RATE * 0.001))
+            out[i] = ((0.6 * a + 0.4 * b) * env).toFloat()
+        }
+        return finish(out, 0.55f)
+    }
+
+    private fun synthShakerLoop(): FloatArray {
+        val hitLen = (SAMPLE_RATE * 0.09).toInt()
+        val hit = FloatArray(hitLen)
+        var prev = 0f
+        for (i in 0 until hitLen) {
+            val t = i.toDouble() / SAMPLE_RATE
+            val x = noise()
+            val hp = x - prev
+            prev = x
+            hit[i] = (hp * (1.0 - exp(-t * 900.0)) * exp(-t * 38.0)).toFloat()
+        }
+        normalize(hit, 0.6f)
+        val out = FloatArray(BAR_FRAMES)
+        for (k in 0 until 16) {
+            val g = when (k % 4) {
+                0 -> 0.45f
+                2 -> 0.6f
+                else -> 0.3f
+            }
+            mixInto(out, hit, k * BAR_FRAMES / 16, g)
         }
         return normalize(out, 0.55f)
     }

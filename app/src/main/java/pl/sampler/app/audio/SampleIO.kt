@@ -40,6 +40,14 @@ object SampleProcessing {
     }
 }
 
+/** Odbiorca zdekodowanych próbek mono (w częstotliwości źródła). */
+interface MonoSink {
+    fun onFormat(sampleRate: Int)
+
+    /** Zwraca false, gdy odbiorca jest pełny, wtedy dekodowanie się kończy. */
+    fun onSample(s: Float): Boolean
+}
+
 object AudioDecoder {
 
     private fun intOrDefault(f: MediaFormat, key: String, def: Int): Int =
@@ -55,13 +63,25 @@ object AudioDecoder {
         null
     }
 
-    /**
-     * Dekoduje plik audio do mono float w SAMPLE_RATE, obcina do [maxSeconds].
-     * Zwraca null, gdy się nie uda. Wołać z wątku w tle.
-     */
+    /** Krótka próbka: mono float w SAMPLE_RATE, obcięta do [maxSeconds]. Wołać z wątku w tle. */
     fun decode(context: Context, uri: Uri, maxSeconds: Int): FloatArray? {
+        val sink = ClipSink(maxSeconds)
+        if (!decodeInto(context, uri, sink)) return null
+        return sink.result()
+    }
+
+    /** Długi track (deck): mono 16-bit w SAMPLE_RATE, obcięty do [maxSeconds]. Wołać z wątku w tle. */
+    fun decodeTrack(context: Context, uri: Uri, maxSeconds: Int): ShortArray? {
+        val sink = TrackSink(maxSeconds)
+        if (!decodeInto(context, uri, sink)) return null
+        return sink.result()
+    }
+
+    /** Dekoduje plik i wpycha próbki mono do [sink]. Zwraca true, jeśli cokolwiek dostarczono. */
+    private fun decodeInto(context: Context, uri: Uri, sink: MonoSink): Boolean {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
+        var delivered = false
         try {
             extractor.setDataSource(context, uri, null)
 
@@ -76,28 +96,27 @@ object AudioDecoder {
                     break
                 }
             }
-            if (trackIndex < 0 || format == null) return null
+            if (trackIndex < 0 || format == null) return false
             extractor.selectTrack(trackIndex)
-            val mime = format.getString(MediaFormat.KEY_MIME) ?: return null
+            val mime = format.getString(MediaFormat.KEY_MIME) ?: return false
 
             var sampleRate = intOrDefault(format, MediaFormat.KEY_SAMPLE_RATE, 44100)
             var channels = max(1, intOrDefault(format, MediaFormat.KEY_CHANNEL_COUNT, 2))
             var pcmFloat = false
+            sink.onFormat(sampleRate)
 
             val dec = MediaCodec.createDecoderByType(mime)
             codec = dec
             dec.configure(format, null, null, 0)
             dec.start()
 
-            var limit = sampleRate * maxSeconds
-            var mono = FloatArray(limit)
-            var count = 0
             val info = MediaCodec.BufferInfo()
             var inputDone = false
             var outputDone = false
+            var full = false
             var idle = 0
 
-            while (!outputDone && count < limit) {
+            while (!outputDone && !full) {
                 if (!inputDone) {
                     val inIdx = dec.dequeueInputBuffer(10_000)
                     if (inIdx >= 0) {
@@ -127,7 +146,11 @@ object AudioDecoder {
                             for (fr in 0 until frames) {
                                 var s = 0f
                                 for (c in 0 until channels) s += fb.get()
-                                if (count < limit) mono[count++] = s / channels
+                                if (!sink.onSample(s / channels)) {
+                                    full = true
+                                    break
+                                }
+                                delivered = true
                             }
                         } else {
                             val sb = out.asShortBuffer()
@@ -135,7 +158,11 @@ object AudioDecoder {
                             for (fr in 0 until frames) {
                                 var s = 0f
                                 for (c in 0 until channels) s += sb.get() / 32768f
-                                if (count < limit) mono[count++] = s / channels
+                                if (!sink.onSample(s / channels)) {
+                                    full = true
+                                    break
+                                }
+                                delivered = true
                             }
                         }
                     }
@@ -148,19 +175,15 @@ object AudioDecoder {
                     pcmFloat = intOrDefault(
                         nf, MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_16BIT
                     ) == AudioFormat.ENCODING_PCM_FLOAT
-                    val newLimit = sampleRate * maxSeconds
-                    if (newLimit > mono.size) mono = mono.copyOf(newLimit)
-                    limit = newLimit
+                    sink.onFormat(sampleRate)
                 } else if (outIdx == MediaCodec.INFO_TRY_AGAIN_LATER && inputDone) {
                     idle++
                     if (idle > 300) break // zabezpieczenie przed zawieszeniem dekodera
                 }
             }
-
-            if (count == 0) return null
-            return resample(mono, count, sampleRate)
+            return delivered
         } catch (e: Exception) {
-            return null
+            return delivered // częściowo zdekodowany plik też się przyda
         } finally {
             try {
                 codec?.stop()
@@ -174,19 +197,82 @@ object AudioDecoder {
         }
     }
 
-    private fun resample(src: FloatArray, count: Int, srcRate: Int): FloatArray {
-        val dstRate = SynthPresets.SAMPLE_RATE
-        if (srcRate == dstRate) return src.copyOf(count)
-        val outLen = (count.toLong() * dstRate / srcRate).toInt()
-        val out = FloatArray(outLen)
-        val ratio = srcRate.toDouble() / dstRate
-        for (i in 0 until outLen) {
-            val p = i * ratio
-            val i0 = p.toInt()
-            val i1 = min(i0 + 1, count - 1)
-            val f = (p - i0).toFloat()
-            out[i] = src[i0] * (1f - f) + src[i1] * f
+    // ---------- sinki ----------
+
+    /** Zbiera krótką próbkę w częstotliwości źródła, na końcu resampluje do SAMPLE_RATE. */
+    private class ClipSink(private val maxSeconds: Int) : MonoSink {
+        private var rate = 44100
+        private var limit = 0
+        private var buf = FloatArray(0)
+        private var count = 0
+
+        override fun onFormat(sampleRate: Int) {
+            rate = sampleRate
+            limit = sampleRate * maxSeconds
+            if (buf.size < limit) buf = buf.copyOf(limit)
         }
-        return out
+
+        override fun onSample(s: Float): Boolean {
+            if (count >= limit) return false
+            buf[count++] = s
+            return true
+        }
+
+        fun result(): FloatArray? {
+            if (count == 0) return null
+            val dstRate = SynthPresets.SAMPLE_RATE
+            if (rate == dstRate) return buf.copyOf(count)
+            val outLen = (count.toLong() * dstRate / rate).toInt()
+            val out = FloatArray(outLen)
+            val ratio = rate.toDouble() / dstRate
+            for (i in 0 until outLen) {
+                val p = i * ratio
+                val i0 = p.toInt()
+                val i1 = min(i0 + 1, count - 1)
+                val f = (p - i0).toFloat()
+                out[i] = buf[i0] * (1f - f) + buf[i1] * f
+            }
+            return out
+        }
+    }
+
+    /** Strumieniowy resampler liniowy do SAMPLE_RATE, zapis 16-bit (oszczędza pamięć na długich trackach). */
+    private class TrackSink(maxSeconds: Int) : MonoSink {
+        private val dstRate = SynthPresets.SAMPLE_RATE
+        private val limit = maxSeconds * dstRate
+        private var out = ShortArray(min(limit, dstRate * 30))
+        private var count = 0
+
+        private var step = 1.0
+        private var nextPos = 0.0
+        private var index = 0L
+        private var prev = 0f
+
+        override fun onFormat(sampleRate: Int) {
+            step = sampleRate.toDouble() / dstRate
+        }
+
+        override fun onSample(s: Float): Boolean {
+            if (index > 0L) {
+                val n = index.toDouble()
+                while (nextPos < n) {
+                    val frac = (nextPos - (n - 1.0)).toFloat()
+                    if (!emit(prev + (s - prev) * frac)) return false
+                    nextPos += step
+                }
+            }
+            prev = s
+            index++
+            return true
+        }
+
+        private fun emit(v: Float): Boolean {
+            if (count >= limit) return false
+            if (count == out.size) out = out.copyOf(min(limit, out.size + out.size / 2))
+            out[count++] = (v.coerceIn(-1f, 1f) * 32767f).toInt().toShort()
+            return true
+        }
+
+        fun result(): ShortArray? = if (count < 2) null else out.copyOf(count)
     }
 }
