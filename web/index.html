@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#05060a">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="description" content="Sampler / looper / mini-deck DJ w przeglądarce.">
+  <title>Sampler · Melodico</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="app">
+    <div id="sampler" hidden></div>
+
+    <div id="intro">
+      <canvas id="introCanvas"></canvas>
+      <div class="intro-title">
+        <div class="intro-name" id="introName">SAMPLER</div>
+        <div class="intro-bar" id="introBar"></div>
+        <div class="intro-tag" id="introTag">TAP&nbsp; ·&nbsp; LOOP&nbsp; ·&nbsp; SCRATCH</div>
+      </div>
+      <div class="intro-start" id="introStart">TAP TO START</div>
+    </div>
+
+    <div id="toast" role="status" aria-live="polite"></div>
+
+    <noscript><p style="padding:2em;color:#fff">Ta aplikacja wymaga JavaScriptu.</p></noscript>
+  </div>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

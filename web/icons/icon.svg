@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="108" y2="108" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#151A33"/><stop offset="1" stop-color="#05060B"/>
+    </linearGradient>
+    <radialGradient id="g1" cx="18" cy="18" r="70" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#00E5FF" stop-opacity="0.33"/><stop offset="1" stop-color="#00E5FF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="g2" cx="96" cy="96" r="70" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FF2D95" stop-opacity="0.33"/><stop offset="1" stop-color="#FF2D95" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ring" x1="24" y1="24" x2="84" y2="84" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#00E5FF"/><stop offset="0.5" stop-color="#7C4DFF"/><stop offset="1" stop-color="#FF2D95"/>
+    </linearGradient>
+    <linearGradient id="label" x1="44" y1="44" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FF2D95"/><stop offset="1" stop-color="#7C4DFF"/>
+    </linearGradient>
+  </defs>
+  <rect width="108" height="108" fill="url(#bg)"/>
+  <rect width="108" height="108" fill="url(#g1)"/>
+  <rect width="108" height="108" fill="url(#g2)"/>
+  <circle cx="54" cy="54" r="29" fill="#0A0C12"/>
+  <circle cx="54" cy="54" r="24" fill="none" stroke="#fff" stroke-opacity="0.15" stroke-width="0.5"/>
+  <circle cx="54" cy="54" r="20" fill="none" stroke="#fff" stroke-opacity="0.10" stroke-width="0.5"/>
+  <circle cx="54" cy="54" r="16" fill="none" stroke="#fff" stroke-opacity="0.15" stroke-width="0.5"/>
+  <circle cx="54" cy="54" r="29.5" fill="none" stroke="url(#ring)" stroke-width="2.4"/>
+  <circle cx="54" cy="54" r="10" fill="url(#label)"/>
+  <line x1="54" y1="46.5" x2="54" y2="49.5" stroke="#fff" stroke-width="1.2" stroke-linecap="round"/>
+  <circle cx="54" cy="54" r="1.8" fill="#0A0C12"/>
+  <path d="M54,54L54,25A29,29 0 0,1 68.5,28.9z" fill="#fff" fill-opacity="0.11"/>
+  <path d="M54,54L54,83A29,29 0 0,1 39.5,79.1z" fill="#fff" fill-opacity="0.11"/>
+</svg>

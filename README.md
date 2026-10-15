@@ -14,3 +14,14 @@ Układ ustawia się stałymi na górze `ui/SamplerScreen.kt` (`PAD_COLUMNS`, `PA
 
 Budowanie lokalnie: `gradle assembleDebug` (lub po `gradle wrapper` → `./gradlew assembleDebug`).
 W GitHub Actions: zakładka Actions → ostatni przebieg → artefakt `sampler-debug-apk`.
+
+## Wersja webowa
+
+W katalogu [`web/`](web/) jest port do przeglądarki (Web Audio + AudioWorklet, bez kroku budowania):
+
+```bash
+cd web && python3 -m http.server 8080   # → http://localhost:8080
+```
+
+Szczegóły (sterowanie klawiaturą, mapowanie Android → web, ograniczenia): [`web/README.md`](web/README.md).
+Workflow `pages.yml` publikuje `web/` na GitHub Pages.
