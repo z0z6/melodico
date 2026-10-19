@@ -1,7 +1,7 @@
 // Prosty service worker: „sieć najpierw”, a gdy jej nie ma — z pamięci podręcznej.
 // Dzięki temu aplikację można uruchomić offline po pierwszym wejściu, a aktualizacje
 // (nowy deploy) pojawiają się od razu, gdy jest internet.
-const CACHE = 'melodico-web-v1';
+const CACHE = 'melodico-web-v2';
 const ASSETS = [
   './',
   'index.html',
@@ -14,6 +14,8 @@ const ASSETS = [
   'js/pads.js',
   'js/deck.js',
   'js/intro.js',
+  'js/fx.js',
+  'js/banks.js',
   'manifest.webmanifest',
   'icons/icon.svg',
   'icons/icon-192.png',

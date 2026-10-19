@@ -248,20 +248,28 @@ export function createDeck(engine, { onLoad }) {
     const pct = (v - 0.5) * 2 * 16;
     return (pct >= 0 ? '+' : '-') + Math.abs(pct).toFixed(1) + '%';
   };
+  let pitchV = 0.5;
+  let volV = 0.8;
   const pitch = HFader({
     label: 'PITCH',
     value: 0.5,
     color: ConsoleColors.Amber,
     centerDetent: true,
     readout: fmtPitch,
-    onChange: (v) => engine.deckSetPitch((v - 0.5) * 2 * 16),
+    onChange: (v) => {
+      pitchV = v;
+      engine.deckSetPitch((v - 0.5) * 2 * 16);
+    },
   });
   const vol = HFader({
     label: 'VOL',
     value: 0.8,
     color: accent,
     readout: (v) => `${Math.floor(v * 100)}%`,
-    onChange: (v) => engine.deckSetVolume(v),
+    onChange: (v) => {
+      volV = v;
+      engine.deckSetVolume(v);
+    },
   });
 
   const el = h('div', 'deck panel', null, head, wrap, transport, pitch.el, vol.el);
@@ -311,6 +319,20 @@ export function createDeck(engine, { onLoad }) {
     },
     togglePlay() {
       engine.deckTogglePlay();
+    },
+    /** Stan zapisywany w banku. */
+    getState() {
+      return { pitch: pitchV, vol: volV, loop: engine.deck.loop };
+    },
+    setState(st) {
+      if (!st) return;
+      pitchV = st.pitch ?? 0.5;
+      volV = st.vol ?? 0.8;
+      pitch.set(pitchV);
+      vol.set(volV);
+      engine.deckSetPitch((pitchV - 0.5) * 2 * 16);
+      engine.deckSetVolume(volV);
+      if (!!st.loop !== engine.deck.loop) engine.deckToggleLoop();
     },
   };
 }

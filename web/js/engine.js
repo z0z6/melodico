@@ -2,6 +2,7 @@
 // nagrywanie z mikrofonu, dekodowanie plików. Odpowiednik AudioEngine.kt (część „sterująca”).
 
 import { buildPads, BASE_BPM, finishSample } from './synth.js';
+import { FxChain } from './fx.js';
 
 export const MAX_SECONDS = 10; // kafelek REC (s)
 export const DECK_MAX_SECONDS = 360; // deck (s)
@@ -31,6 +32,8 @@ class Slot {
     this.loop = false;
     this.seconds = 0;
     this.name = '';
+    /** Kopia próbek (potrzebna do zapisu w banku; worklet ma własną). */
+    this.data = null;
   }
 }
 
@@ -58,6 +61,7 @@ export class Engine extends Emitter {
 
     this.ctx = null;
     this.node = null;
+    this.fx = null;
     this.sr = 44100;
     this.started = false;
 
@@ -100,7 +104,9 @@ export class Engine extends Emitter {
         outputChannelCount: [2],
       });
       this.node.port.onmessage = (e) => this._onWorkletMessage(e.data);
-      this.node.connect(this.ctx.destination);
+      this.fx = new FxChain(this.ctx);
+      this.node.connect(this.fx.input);
+      this.fx.output.connect(this.ctx.destination);
 
       const pads = buildPads(this.sr);
       for (const p of pads) {
@@ -122,6 +128,7 @@ export class Engine extends Emitter {
       // sprzątanie, żeby kolejne dotknięcie mogło spróbować od nowa
       this._starting = null;
       this.node = null;
+      this.fx = null;
       this.ctx = null;
       this.pads = [];
       this.loopModes = new Set();
@@ -166,6 +173,7 @@ export class Engine extends Emitter {
 
   setTempo(ratio) {
     this._send({ t: 'tempo', v: ratio });
+    if (this.fx) this.fx.setBpm(ratio * BASE_BPM); // delay podąża za tempem
   }
 
   setPitch(ratio) {
@@ -209,7 +217,29 @@ export class Engine extends Emitter {
     slot.name = '';
     slot.loop = false;
     slot.seconds = 0;
+    slot.data = null;
     slot.status = 'empty';
+    this.emit('slots');
+  }
+
+  /** Ustawia zestaw kafelków w trybie pętli (np. po wczytaniu banku). Zatrzymuje wszystko. */
+  setLoopModes(ids) {
+    this._send({ t: 'stopAll' });
+    this.activeLoops = new Set();
+    this.loopModes = new Set(ids);
+    this.emit('loops');
+  }
+
+  /** Wstawia gotowe próbki do slotu (lub czyści, gdy data === null). */
+  restoreSlot(slot, data, name, loop) {
+    if (slot.status === 'recording' || slot.status === 'loading') return;
+    if (!data) {
+      this.clearSlot(slot);
+      return;
+    }
+    this._stopVoices(slot.padId);
+    slot.loop = !!loop;
+    this._completeSlot(slot, data.slice(), name);
     this.emit('slots');
   }
 
@@ -326,7 +356,9 @@ export class Engine extends Emitter {
     slot.name = name;
     slot.seconds = data.length / this.sr;
     slot.status = 'ready';
-    this._send({ t: 'pad', id: slot.padId, data }, [data.buffer]);
+    slot.data = data; // kopia do zapisu w banku
+    const copy = data.slice();
+    this._send({ t: 'pad', id: slot.padId, data: copy }, [copy.buffer]);
   }
 
   async _decodeBuffer(file) {

@@ -5,6 +5,8 @@ import { BASE_BPM } from './synth.js';
 import { createPad } from './pads.js';
 import { createDeck } from './deck.js';
 import { createIntro } from './intro.js';
+import { DELAY_DIVS } from './fx.js';
+import { BANK_IDS, listBanks, loadBank, saveBank } from './banks.js';
 import { CompactKnob, ConsoleButton, ConsoleColors, LevelMeter, h, toast, updateUnit } from './ui.js';
 
 const SLOT_COLORS = ['#00E5FF', '#76FF03', '#FF4081', '#FFD740'];
@@ -13,6 +15,7 @@ const SLOT_COLORS = ['#00E5FF', '#76FF03', '#FF4081', '#FFD740'];
 const KEY_ROWS = [
   { codes: ['KeyQ', 'KeyW', 'KeyE', 'KeyR', 'KeyT', 'KeyY', 'KeyU'], pad0: 0 },
   { codes: ['KeyA', 'KeyS', 'KeyD', 'KeyF', 'KeyG', 'KeyH', 'KeyJ'], pad0: 7 },
+  { codes: ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8', 'Digit9'], pad0: 14 },
 ];
 const SLOT_KEYS = ['KeyZ', 'KeyX', 'KeyC', 'KeyV'];
 
@@ -72,6 +75,159 @@ function mountSampler(root, engine) {
     },
   });
 
+  // ---------- pasek efektów ----------
+  const fxState = { filter: 0, res: 25, dtime: 1, dfb: 35, dmix: 0, rmix: 0 };
+  const fxApply = {
+    filter: (v) => engine.fx.setFilter(v / 100),
+    res: (v) => engine.fx.setRes(v / 100),
+    dtime: (v) => engine.fx.setDelayDiv(v),
+    dfb: (v) => engine.fx.setDelayFeedback(v / 100),
+    dmix: (v) => engine.fx.setDelayMix(v / 100),
+    rmix: (v) => engine.fx.setReverbMix(v / 100),
+  };
+  const fxSpecs = [
+    { key: 'filter', label: 'FILTER', min: -100, max: 100, def: 0, color: '#FFD740',
+      readout: (v) => (Math.abs(v) < 2 ? 'OFF' : (v < 0 ? 'LP ' : 'HP ') + Math.round(Math.abs(v)) + '%') },
+    { key: 'res', label: 'RES', min: 0, max: 100, def: 25, color: '#FFD740', readout: (v) => Math.round(v) + '%' },
+    { key: 'dtime', label: 'DLY TIME', min: 0, max: 3, def: 1, color: '#40C4FF', readout: (v) => DELAY_DIVS[Math.round(v)].label },
+    { key: 'dfb', label: 'DLY FDBK', min: 0, max: 90, def: 35, color: '#40C4FF', readout: (v) => Math.round(v) + '%' },
+    { key: 'dmix', label: 'DLY MIX', min: 0, max: 100, def: 0, color: '#40C4FF', readout: (v) => Math.round(v) + '%' },
+    { key: 'rmix', label: 'REV MIX', min: 0, max: 100, def: 0, color: '#B388FF', readout: (v) => Math.round(v) + '%' },
+  ];
+  const fxKnobs = {};
+  for (const sp of fxSpecs) {
+    fxKnobs[sp.key] = CompactKnob({
+      label: sp.label,
+      value: sp.def,
+      min: sp.min,
+      max: sp.max,
+      def: sp.def,
+      step: 1,
+      color: sp.color,
+      readout: sp.readout,
+      small: true,
+      onChange: (v) => {
+        fxState[sp.key] = v;
+        fxApply[sp.key](v);
+      },
+    });
+  }
+
+  // ---------- banki ----------
+  const bankHave = new Set();
+  let saveArmed = false;
+  const bankBtns = BANK_IDS.map((id) => {
+    const b = ConsoleButton(id, ConsoleColors.Green, () => onBank(id));
+    return { id, b };
+  });
+  const bSave = ConsoleButton('SAVE', ConsoleColors.Red, () => {
+    saveArmed = !saveArmed;
+    bSave.setLit(saveArmed);
+    if (saveArmed) toast('Wybierz bank, do którego zapisać ustawienia');
+  });
+
+  function refreshBankLeds() {
+    for (const { id, b } of bankBtns) b.setLit(bankHave.has(id));
+  }
+
+  async function collectBank() {
+    return {
+      v: 1,
+      savedAt: Date.now(),
+      settings: {
+        bpm,
+        semis,
+        glow: settings.edgeGlow,
+        doubleTap: settings.doubleTapLoop,
+        fx: { ...fxState },
+        deck: deck.getState(),
+        loopModes: [...engine.loopModes],
+      },
+      slots: engine.slots.map((sl) =>
+        sl.status === 'ready' && sl.data ? { name: sl.name, loop: sl.loop, data: sl.data } : null
+      ),
+    };
+  }
+
+  function applyBank(bank) {
+    const st = bank.settings || {};
+    engine.stopAll();
+    engine.setLoopModes(st.loopModes || []);
+
+    bpm = st.bpm ?? BASE_BPM;
+    tempoKnob.setValue(bpm);
+    engine.setTempo(bpm / BASE_BPM);
+    semis = st.semis ?? 0;
+    keyKnob.setValue(semis);
+    engine.setPitch(Math.pow(2, semis / 12));
+
+    for (const sp of fxSpecs) {
+      const v = (st.fx && st.fx[sp.key]) ?? sp.def;
+      fxState[sp.key] = v;
+      fxKnobs[sp.key].setValue(v);
+      fxApply[sp.key](v);
+    }
+
+    settings.edgeGlow = st.glow !== false;
+    settings.doubleTapLoop = st.doubleTap !== false;
+    bGlow.setLit(settings.edgeGlow);
+    bTap.setLit(settings.doubleTapLoop);
+    root.classList.toggle('glow-on', settings.edgeGlow);
+
+    deck.setState(st.deck);
+
+    engine.slots.forEach((sl, i) => {
+      const sd = bank.slots && bank.slots[i];
+      engine.restoreSlot(sl, sd ? sd.data : null, sd ? sd.name : '', sd ? sd.loop : false);
+    });
+  }
+
+  async function onBank(id) {
+    try {
+      if (saveArmed) {
+        saveArmed = false;
+        bSave.setLit(false);
+        await saveBank(id, await collectBank());
+        bankHave.add(id);
+        refreshBankLeds();
+        toast(`Zapisano w banku ${id}`);
+      } else {
+        if (!bankHave.has(id)) {
+          toast(`Bank ${id} jest pusty — kliknij SAVE, potem bank`);
+          return;
+        }
+        const bank = await loadBank(id);
+        if (!bank) {
+          bankHave.delete(id);
+          refreshBankLeds();
+          toast(`Bank ${id} jest pusty`);
+          return;
+        }
+        applyBank(bank);
+        toast(`Wczytano bank ${id}`);
+      }
+    } catch (e) {
+      console.error(e);
+      toast('Zapis niedostępny w tej przeglądarce (tryb prywatny?)');
+    }
+  }
+
+  listBanks()
+    .then((ids) => {
+      ids.forEach((i) => bankHave.add(i));
+      refreshBankLeds();
+    })
+    .catch(() => {});
+
+  const fxbar = h(
+    'div',
+    'fxbar panel',
+    null,
+    h('div', 'fxtitle', { text: 'FX' }),
+    ...fxSpecs.map((sp) => fxKnobs[sp.key].el),
+    h('div', 'banks', null, h('div', 'fxtitle', { text: 'BANK' }), ...bankBtns.map((x) => x.b.el), bSave.el)
+  );
+
   const bGlow = ConsoleButton('GLOW', ConsoleColors.Green, () => {
     settings.edgeGlow = !settings.edgeGlow;
     bGlow.setLit(settings.edgeGlow);
@@ -111,7 +267,7 @@ function mountSampler(root, engine) {
     const pad = createPad({
       label: p.label,
       color: p.color,
-      keyHint: code ? code.replace('Key', '') : '',
+      keyHint: code ? code.replace('Key', '').replace('Digit', '') : '',
       doubleTapEnabled: () => settings.doubleTapLoop,
       onPress: () => engine.press(p),
       onDoubleTap: () => engine.toggleLoopMode(p),
@@ -192,7 +348,7 @@ function mountSampler(root, engine) {
   wireDrop(deck.el, (f) => engine.loadDeck(f));
 
   const body = h('div', 'body', null, padsPanel, deck.el);
-  root.replaceChildren(topbar, body);
+  root.replaceChildren(topbar, body, fxbar);
   root.classList.add('glow-on');
 
   // ---------- zdarzenia silnika ----------

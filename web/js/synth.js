@@ -283,6 +283,158 @@ export function buildPads(sr) {
     return normalize(out, 0.55);
   }
 
+
+  // ----- dodatkowe presety: perkusja, bas, FX, syntezator -----
+
+  function rim() {
+    const n = Math.floor(sr * 0.1);
+    const out = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const t = i / sr;
+      const tone = Math.sin(TWO_PI * 1700 * t) * 0.6 + Math.sin(TWO_PI * 820 * t) * 0.5;
+      out[i] = tone * Math.exp(-t * 110) + noise() * Math.exp(-t * 200) * 0.4;
+    }
+    return finish(out, 0.7);
+  }
+
+  function crash() {
+    const n = Math.floor(sr * 1.4);
+    const out = new Float32Array(n);
+    const ratios = [1.0, 1.4471, 1.6170, 1.9265, 2.5028, 2.6637];
+    let prev = 0;
+    for (let i = 0; i < n; i++) {
+      const t = i / sr;
+      const x = noise();
+      const hp = x - prev;
+      prev = x;
+      let metal = 0;
+      for (const r of ratios) metal += Math.sin(TWO_PI * 3100 * r * t) > 0 ? 1 : -1;
+      const env = Math.min(1, i / (sr * 0.002)) * Math.exp(-t * 3.2);
+      out[i] = (hp * 0.8 + (metal / ratios.length) * 0.25) * env;
+    }
+    return finish(out, 0.6);
+  }
+
+  function sub808() {
+    const n = Math.floor(sr * 0.9);
+    const out = new Float32Array(n);
+    let phase = 0;
+    for (let i = 0; i < n; i++) {
+      const t = i / sr;
+      const freq = 46 + 90 * Math.exp(-t * 22);
+      phase += (TWO_PI * freq) / sr;
+      const click = Math.min(1, i / (sr * 0.002));
+      out[i] = Math.tanh(Math.sin(phase) * 1.7) * Math.exp(-t * 2.6) * click;
+    }
+    return finish(out, 0.9);
+  }
+
+  function zap() {
+    const n = Math.floor(sr * 0.3);
+    const out = new Float32Array(n);
+    let phase = 0;
+    for (let i = 0; i < n; i++) {
+      const t = i / sr;
+      const freq = 200 + 2600 * Math.exp(-t * 14);
+      phase += (TWO_PI * freq) / sr;
+      out[i] = (Math.sin(phase) + 0.3 * Math.sin(phase * 2.01)) * Math.exp(-t * 9);
+    }
+    return finish(out, 0.6);
+  }
+
+  function stab() {
+    const n = Math.floor(sr * 0.5);
+    const out = new Float32Array(n);
+    const notes = [220.0, 261.63, 329.63, 392.0]; // Am7
+    for (const f of notes) {
+      for (const det of [0.997, 1.003]) {
+        let phase = 0;
+        for (let i = 0; i < n; i++) {
+          const t = i / sr;
+          phase += (TWO_PI * f * det) / sr;
+          let tone = 0;
+          for (let h = 1; h <= 6; h++) tone += Math.sin(phase * h) / h;
+          out[i] += tone * Math.exp(-t * 9) * Math.min(1, i / (sr * 0.003));
+        }
+      }
+    }
+    return finish(out, 0.7);
+  }
+
+  function riser() {
+    const n = Math.floor(sr * 1.6);
+    const out = new Float32Array(n);
+    let y = 0;
+    let phase = 0;
+    for (let i = 0; i < n; i++) {
+      const u = i / n;
+      const a = 0.02 + 0.6 * u * u;
+      y += a * (noise() - y); // filtr dolnoprzepustowy z rosnącym przecięciem
+      phase += (TWO_PI * (150 + 1500 * u * u)) / sr;
+      out[i] = (y * 1.6 + 0.35 * Math.sin(phase)) * Math.pow(u, 1.5);
+    }
+    return finish(out, 0.7);
+  }
+
+  /** Funkowa perkusja, 16-tki. */
+  function funkLoop(kickS, snareS, hatS) {
+    const out = new Float32Array(BAR);
+    const at = (k) => Math.floor((k * BAR) / 16);
+    for (const k of [0, 5, 8, 10]) mixInto(out, kickS, at(k), k === 0 ? 1 : 0.8);
+    for (const k of [4, 12]) mixInto(out, snareS, at(k), 0.85);
+    for (const k of [7, 15]) mixInto(out, snareS, at(k), 0.25); // ghost notes
+    for (let k = 0; k < 16; k++) mixInto(out, hatS, at(k), k % 2 === 0 ? 0.4 : 0.22);
+    return normalize(out, 0.8);
+  }
+
+  /** Acid: 16 kroków, piła przez dwubiegunowy filtr z obwiednią. */
+  function acidLoop() {
+    const out = new Float32Array(BAR);
+    const notes = [
+      55.0, 55.0, 110.0, 55.0, 82.41, 55.0, 65.41, 98.0,
+      55.0, 55.0, 110.0, 55.0, 73.42, 55.0, 82.41, 65.41,
+    ];
+    notes.forEach((f, k) => {
+      const start = Math.floor((k * BAR) / 16);
+      const len = Math.floor(((k + 1) * BAR) / 16) - start;
+      let phase = 0;
+      let y1 = 0;
+      let y2 = 0;
+      for (let i = 0; i < len; i++) {
+        const t = i / sr;
+        phase += f / sr;
+        const saw = 2 * (phase - Math.floor(phase)) - 1;
+        const c = 0.03 + 0.45 * Math.exp(-t * 16);
+        y1 += c * (saw - y1);
+        y2 += c * (y1 - y2);
+        const gate = Math.min(1, (len - i) / (sr * 0.008)) * Math.min(1, i / (sr * 0.002));
+        out[start + i] = y2 * Math.exp(-t * 3) * gate;
+      }
+    });
+    return normalize(out, 0.75);
+  }
+
+  /** Melodia na wibrującym „pulsie”, pentatonika a-moll. */
+  function leadLoop() {
+    const out = new Float32Array(BAR);
+    const notes = [440.0, 523.25, 659.25, 523.25, 587.33, 440.0, 392.0, 440.0];
+    notes.forEach((f, k) => {
+      const start = k * EIGHTH;
+      let phase = 0;
+      for (let i = 0; i < EIGHTH; i++) {
+        const t = i / sr;
+        const vib = 1 + 0.004 * Math.sin(TWO_PI * 5.5 * t);
+        phase += (TWO_PI * f * vib) / sr;
+        let tone = 0;
+        for (let h = 1; h <= 9; h += 2) tone += Math.sin(phase * h) / (h * h) * (h % 4 === 1 ? 1 : -1);
+        const attack = Math.min(1, i / (sr * 0.004));
+        const release = Math.min(1, (EIGHTH - i) / (sr * 0.012));
+        out[start + i] = tone * Math.exp(-t * 5) * attack * release;
+      }
+    });
+    return normalize(out, 0.6);
+  }
+
   // ----- składanie -----
 
   const kickS = kick();
@@ -301,6 +453,16 @@ export function buildPads(sr) {
   const chord = chordLoop();
   const shaker = shakerLoop();
 
+  const rimS = rim();
+  const crashS = crash();
+  const sub = sub808();
+  const zapS = zap();
+  const stabS = stab();
+  const riserS = riser();
+  const funk = funkLoop(kickS, snareS, closedHat);
+  const acid = acidLoop();
+  const lead = leadLoop();
+
   // one-shoty (ciepłe kolory); pętle (zimne). Tryb można zmienić podwójnym kliknięciem.
   return [
     { id: 0, label: 'KICK', data: kickS, loop: false, color: '#FF5252' },
@@ -317,5 +479,15 @@ export function buildPads(sr) {
     { id: 11, label: 'ARP', data: arp, loop: true, color: '#18FFFF' },
     { id: 12, label: 'CHORD', data: chord, loop: true, color: '#64FFDA' },
     { id: 13, label: 'SHAKER', data: shaker, loop: true, color: '#80D8FF' },
+    // --- rozszerzenie: perkusja, bas, FX, syntezator ---
+    { id: 14, label: 'RIM', data: rimS, loop: false, color: '#FFAB91' },
+    { id: 15, label: 'CRASH', data: crashS, loop: false, color: '#F4FF81' },
+    { id: 16, label: '808', data: sub, loop: false, color: '#FF8A80' },
+    { id: 17, label: 'ZAP', data: zapS, loop: false, color: '#84FFFF' },
+    { id: 18, label: 'STAB', data: stabS, loop: false, color: '#CCFF90' },
+    { id: 19, label: 'RISER', data: riserS, loop: false, color: '#B9F6CA' },
+    { id: 20, label: 'FUNK', data: funk, loop: true, color: '#82B1FF' },
+    { id: 21, label: 'ACID', data: acid, loop: true, color: '#CE93D8' },
+    { id: 22, label: 'LEAD', data: lead, loop: true, color: '#A7FFEB' },
   ];
 }

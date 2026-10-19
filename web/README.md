@@ -25,13 +25,33 @@ Dla GitHub Pages jest workflow `.github/workflows/pages.yml`
 |---|---|---|
 | Kafelki one-shot (KICK…COWBELL) | klik / dotknięcie | `Q W E R T Y U` |
 | Kafelki pętli (BEAT…SHAKER) | klik / dotknięcie | `A S D F G H J` |
+| Nowe kafelki: RIM, CRASH, 808, ZAP, STAB, RISER, FUNK, ACID, LEAD | klik / dotknięcie | `1 2 3 4 5 6 7 8 9` |
 | Sloty REC 1–4 | klik / dotknięcie | `Z X C V` |
 | Przełączenie one-shot ⇄ pętla | podwójne kliknięcie (`2xTAP`) | `Shift` + klawisz |
 | Deck: PLAY / PAUSE | przycisk | `Spacja` |
 | STOP (wszystko) | przycisk | `Esc` |
 | Scratch | przeciąganie po płycie po okręgu | – |
 | TEMPO / KEY | przeciąganie pokrętła (↑/→ więcej), kółko myszy, podwójne kliknięcie = reset | – |
+| Efekty FILTER / RES / DLY / REV | pokrętła na pasku FX (podwójne kliknięcie = reset) | – |
+| Banki A–D | `SAVE`, potem bank = zapis; sam bank = wczytanie | – |
 | Wczytanie pliku | `FILE` / `LOAD` albo **przeciągnij plik audio** na kafelek REC lub deck | – |
+
+## Efekty (pasek FX)
+
+Efekty działają na całym miksie (kafelki i deck), natywnymi węzłami Web Audio (`js/fx.js`):
+
+- **FILTER** – jedno pokrętło: w lewo filtr dolnoprzepustowy (LP), w prawo górnoprzepustowy (HP), środek = wyłączony.
+- **RES** – rezonans filtra (0–12 dB).
+- **DLY TIME / FDBK / MIX** – delay zsynchronizowany z pokrętłem TEMPO (1/16, 1/8, 1/8 z kropką, 1/4),
+  ze ściemnianiem powtórek; FDBK to sprzężenie zwrotne (0–90 %).
+- **REV MIX** – pogłos (konwolucja z generowaną odpowiedzią impulsową, ok. 2,2 s).
+
+## Banki
+
+Cztery banki (A–D) w IndexedDB przeglądarki (`js/banks.js`). Zapisują: tempo, tonację, ustawienia efektów,
+GLOW / 2xTAP, tryb (one-shot / pętla) każdego kafelka, pitch / vol / loop decka oraz **próbki ze slotów REC**.
+Nie zapisują tracka z decka (za duży). Zapis: `SAVE` (świeci się) → klik w bank. Wczytanie: klik w bank
+(świecąca dioda = bank zawiera dane). Dane są lokalne dla przeglądarki i adresu strony.
 
 ## Mapowanie Android → web
 
@@ -53,4 +73,4 @@ Dla GitHub Pages jest workflow `.github/workflows/pages.yml`
   na słabych telefonach mogą się nie wczytać.
 - Układ pionowy jest dostępny (siatka 4 kolumny + deck pod spodem), ale zamierzony jest poziomy.
 - Dodatki webowe: klawiatura, drag & drop plików, kółko myszy na pokrętłach, instalacja jako PWA
-  (manifest + service worker, offline po pierwszym wejściu).
+  (manifest + service worker, offline po pierwszym wejściu), 9 dodatkowych presetów, efekty i banki.

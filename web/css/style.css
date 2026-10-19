@@ -90,10 +90,10 @@ html, body {
 /* -------------------------------------------------------------- siatka padów */
 
 .pads-panel {
-  flex: 3.2;
+  flex: 4;
   min-width: 0;
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(9, minmax(0, 1fr));
   grid-template-rows: repeat(3, minmax(0, 1fr));
   gap: calc(5 * var(--u));
   padding: calc(6 * var(--u));
@@ -171,9 +171,9 @@ html, body {
 
 .pad .plabel {
   position: relative;
-  font-size: calc(12 * var(--u));
+  font-size: calc(10.5 * var(--u));
   font-weight: 700;
-  letter-spacing: calc(1 * var(--u));
+  letter-spacing: calc(0.5 * var(--u));
   color: #c5cbd6;
   white-space: nowrap;
   pointer-events: none;
@@ -181,7 +181,7 @@ html, body {
 .pad .ptag {
   position: relative;
   max-width: 94%;
-  font-size: calc(9 * var(--u));
+  font-size: calc(8 * var(--u));
   color: var(--label);
   white-space: nowrap;
   overflow: hidden;
@@ -208,10 +208,11 @@ html, body {
   left: 0; right: 0; bottom: 0;
   display: flex;
   gap: calc(3 * var(--u));
-  height: calc(28 * var(--u));
-  padding: calc(4 * var(--u));
+  height: calc(26 * var(--u));
 }
-.slot-btns .cbtn { flex: 1; font-size: calc(8 * var(--u)); }
+.slot-btns { gap: calc(2 * var(--u)); padding: calc(3 * var(--u)); }
+.slot-btns .cbtn { flex: 1; font-size: calc(6.5 * var(--u)); letter-spacing: 0; border-radius: calc(4 * var(--u)); }
+.slot-btns .cbtn::before { width: calc(8 * var(--u)); }
 .slot.dragover .pad, .deck.dragover { outline: 2px dashed var(--cyan); outline-offset: -2px; }
 
 /* ------------------------------------------------------------ przyciski */
@@ -312,7 +313,32 @@ html, body {
   pointer-events: none;
 }
 .transport { display: flex; gap: calc(4 * var(--u)); height: calc(26 * var(--u)); flex: none; }
-.transport .cbtn { flex: 1; }
+.transport .cbtn { flex: 1; font-size: calc(8 * var(--u)); letter-spacing: 0; }
+
+/* ------------------------------------------------------------------ pasek FX */
+
+.fxbar {
+  flex: none;
+  min-height: calc(46 * var(--u));
+  display: flex;
+  align-items: center;
+  gap: calc(8 * var(--u));
+  padding: calc(4 * var(--u)) calc(10 * var(--u));
+  border-radius: calc(8 * var(--u));
+}
+.fxtitle {
+  font-size: calc(9 * var(--u));
+  font-weight: 700;
+  letter-spacing: calc(2 * var(--u));
+  color: var(--amber);
+}
+.knob.small { gap: calc(4 * var(--u)); }
+.knob.small canvas { width: calc(30 * var(--u)); height: calc(30 * var(--u)); }
+.knob.small .klabel { font-size: calc(7 * var(--u)); letter-spacing: calc(1 * var(--u)); }
+.knob.small .kread { font-size: calc(9 * var(--u)); min-width: calc(40 * var(--u)); padding: 0 calc(3 * var(--u)); }
+.banks { margin-left: auto; display: flex; align-items: center; gap: calc(4 * var(--u)); flex: none; }
+.banks .cbtn { width: calc(28 * var(--u)); height: calc(24 * var(--u)); }
+.banks .cbtn:last-child { width: calc(40 * var(--u)); }
 
 /* -------------------------------------------------------------------- intro */
 
@@ -405,7 +431,10 @@ html, body {
     grid-template-rows: none;
     grid-auto-rows: calc(58 * var(--u));
   }
-  .pad-spacer { display: block; grid-column: span 2; }
+  .pad .plabel { font-size: calc(11 * var(--u)); }
+  .pad-spacer { display: block; grid-column: span 1; } /* 23 presetów = 5 pełnych rzędów + 3 */
+  .fxbar { flex: none; flex-wrap: wrap; row-gap: calc(6 * var(--u)); }
+  .banks { margin-left: 0; width: 100%; justify-content: flex-start; }
   .deck { height: calc(330 * var(--u)); flex: none; }
 
   .intro-title {

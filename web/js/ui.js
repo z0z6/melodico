@@ -244,9 +244,11 @@ export function KnobDial({ value, min, max, def, step, color, onChange }) {
   let acc = 0;
   let lastX = 0;
   let lastY = 0;
-  let lastDown = 0;
-  let lastDownX = 0;
-  let lastDownY = 0;
+  let downX = 0;
+  let downY = 0;
+  let downT = 0;
+  let moved = false;
+  let lastTap = null; // { t, x, y } — ostatnie „czyste” dotknięcie (bez przeciągania)
 
   function apply(v) {
     if (v !== cur) onChange(v);
@@ -256,15 +258,20 @@ export function KnobDial({ value, min, max, def, step, color, onChange }) {
     e.preventDefault();
     canvas.setPointerCapture(e.pointerId);
     const now = performance.now();
-    if (now - lastDown < 300 && Math.hypot(e.clientX - lastDownX, e.clientY - lastDownY) < 12 * U) {
-      lastDown = 0;
+    if (
+      lastTap &&
+      now - lastTap.t < 300 &&
+      Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 12 * U
+    ) {
+      lastTap = null;
       dragging = false;
-      apply(def); // podwójne dotknięcie = reset
+      apply(def); // podwójne dotknięcie (dwa tapy) = reset
       return;
     }
-    lastDown = now;
-    lastDownX = e.clientX;
-    lastDownY = e.clientY;
+    downX = e.clientX;
+    downY = e.clientY;
+    downT = now;
+    moved = false;
     dragging = true;
     acc = cur;
     lastX = e.clientX;
@@ -277,13 +284,16 @@ export function KnobDial({ value, min, max, def, step, color, onChange }) {
     const dy = e.clientY - lastY;
     lastX = e.clientX;
     lastY = e.clientY;
+    if (Math.hypot(e.clientX - downX, e.clientY - downY) > 6 * U) moved = true;
     const delta = ((dx - dy) / (220 * U)) * (max - min);
     acc = Math.min(max, Math.max(min, acc + delta));
     const stepped = Math.min(max, Math.max(min, Math.round(acc / step) * step));
     apply(stepped);
   });
 
-  const end = () => {
+  const end = (e) => {
+    if (dragging && !moved && e.type === 'pointerup') lastTap = { t: downT, x: downX, y: downY };
+    else lastTap = null;
     dragging = false;
   };
   canvas.addEventListener('pointerup', end);
@@ -309,7 +319,7 @@ export function KnobDial({ value, min, max, def, step, color, onChange }) {
 }
 
 /** Pokrętło z podpisem i cyfrowym odczytem obok, do wąskiego paska. */
-export function CompactKnob({ label, value, min, max, def, step, readout, color, onChange }) {
+export function CompactKnob({ label, value, min, max, def, step, readout, color, onChange, small = false }) {
   const read = h('div', 'kread', { text: readout(value) });
   read.style.color = color;
   const dial = KnobDial({
@@ -325,8 +335,21 @@ export function CompactKnob({ label, value, min, max, def, step, readout, color,
       onChange(v);
     },
   });
-  const el = h('div', 'knob', null, dial.canvas, h('div', 'ktext', null, h('div', 'klabel', { text: label }), read));
-  return { el };
+  const el = h(
+    'div',
+    'knob' + (small ? ' small' : ''),
+    null,
+    dial.canvas,
+    h('div', 'ktext', null, h('div', 'klabel', { text: label }), read)
+  );
+  return {
+    el,
+    /** Ustawia wartość bez wywoływania onChange (np. przy wczytaniu banku). */
+    setValue(v) {
+      dial.set(v);
+      read.textContent = readout(v);
+    },
+  };
 }
 
 // ------------------------------------------------------------------- Fader
@@ -411,5 +434,13 @@ export function HFader({ label, value, color, readout, centerDetent = false, onC
   canvas.addEventListener('pointercancel', end);
 
   const el = h('div', 'fader', null, h('div', 'flabel', { text: label }), canvas, read);
-  return { el };
+  return {
+    el,
+    /** Ustawia wartość 0..1 bez wywoływania onChange. */
+    set(v) {
+      cur = v;
+      read.textContent = readout(v);
+      view.redraw();
+    },
+  };
 }
