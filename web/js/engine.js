@@ -5,6 +5,20 @@ import { buildPads, BASE_BPM, finishSample } from './synth.js';
 import { FxChain } from './fx.js';
 
 export const MAX_SECONDS = 10; // kafelek REC (s)
+export const MIX_BITRATE = 128000; // b/s — Opus 128 kb/s ≈ 1 MB/min, jakość zbliżona do oryginału
+
+/** Formaty zapisu miksu wg stosunku jakości do rozmiaru (pierwszy obsługiwany wygrywa). */
+const MIX_FORMATS = [
+  { mime: 'audio/webm;codecs=opus', ext: 'webm', label: 'Opus' },
+  { mime: 'audio/ogg;codecs=opus', ext: 'ogg', label: 'Opus' },
+  { mime: 'audio/mp4;codecs=mp4a.40.2', ext: 'm4a', label: 'AAC' }, // Safari
+  { mime: 'audio/mp4', ext: 'm4a', label: 'AAC' },
+];
+
+export function pickMixFormat() {
+  if (typeof MediaRecorder === 'undefined') return null;
+  return MIX_FORMATS.find((f) => MediaRecorder.isTypeSupported(f.mime)) || null;
+}
 export const DECK_MAX_SECONDS = 360; // deck (s)
 const MIN_SAMPLE_SECONDS = 0.1;
 
@@ -65,6 +79,8 @@ export class Engine extends Emitter {
     this.sr = 44100;
     this.started = false;
 
+    this._mix = null; // aktywny zapis miksu do pliku
+    this._recDest = null;
     this._rec = null; // aktywne nagrywanie
     this._pendingStop = false; // „stop” wciśnięty zanim mikrofon był gotowy
     this._recCtx = null;
@@ -329,6 +345,74 @@ export class Engine extends Emitter {
   /** Obrót płyty o `revolutions` obrotów (dodatnio = zgodnie z ruchem wskazówek zegara = do przodu). */
   deckScratch(revolutions) {
     this._send({ t: 'deckScratch', rev: revolutions });
+  }
+
+  // ================= zapis miksu do pliku =================
+
+  get mixRecording() {
+    return !!this._mix;
+  }
+
+  /** Sekundy od startu zapisu miksu. */
+  mixElapsed() {
+    return this._mix ? (performance.now() - this._mix.t0) / 1000 : 0;
+  }
+
+  /** Zapisuje to, co słychać (kafelki + deck + efekty). Zwraca false, jeśli się nie da. */
+  startMixRecording() {
+    if (this._mix) return true;
+    const fmt = pickMixFormat();
+    if (!fmt || !this.fx || !this.ctx.createMediaStreamDestination) {
+      this.emit('toast', 'Ta przeglądarka nie obsługuje zapisu do pliku');
+      return false;
+    }
+    try {
+      if (!this._recDest) {
+        this._recDest = this.ctx.createMediaStreamDestination();
+        this.fx.output.connect(this._recDest);
+      }
+      const mr = new MediaRecorder(this._recDest.stream, {
+        mimeType: fmt.mime,
+        audioBitsPerSecond: MIX_BITRATE,
+      });
+      const chunks = [];
+      mr.ondataavailable = (e) => {
+        if (e.data && e.data.size) chunks.push(e.data);
+      };
+      this._mix = { mr, chunks, fmt, t0: performance.now() };
+      mr.start(1000); // porcje co sekundę, żeby nic nie przepadło
+    } catch (e) {
+      console.error(e);
+      this._mix = null;
+      this.emit('toast', 'Nie udało się rozpocząć zapisu');
+      return false;
+    }
+    this.emit('mixrec');
+    return true;
+  }
+
+  /** Kończy zapis. Zwraca { blob, ext, seconds, label } albo null. */
+  stopMixRecording() {
+    return new Promise((resolve) => {
+      const m = this._mix;
+      if (!m) {
+        resolve(null);
+        return;
+      }
+      this._mix = null;
+      const seconds = (performance.now() - m.t0) / 1000;
+      m.mr.onstop = () => {
+        const blob = new Blob(m.chunks, { type: m.fmt.mime.split(';')[0] });
+        this.emit('mixrec');
+        resolve(blob.size > 0 ? { blob, ext: m.fmt.ext, label: m.fmt.label, seconds } : null);
+      };
+      try {
+        m.mr.stop();
+      } catch (e) {
+        this.emit('mixrec');
+        resolve(null);
+      }
+    });
   }
 
   // ================= pliki =================

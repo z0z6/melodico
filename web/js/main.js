@@ -238,8 +238,31 @@ function mountSampler(root, engine) {
     bTap.setLit(settings.doubleTapLoop);
   }, { lit: true });
   const bStop = ConsoleButton('STOP', ConsoleColors.Red, () => engine.stopAll());
-  for (const b of [bGlow, bTap, bStop]) {
-    b.el.style.width = `calc(${b === bTap ? 58 : 54} * var(--u))`;
+
+  // zapis miksu do pliku (Opus; w Safari AAC)
+  const bRecMix = ConsoleButton('REC MIX', ConsoleColors.Red, () => toggleMixRecording());
+  async function toggleMixRecording() {
+    if (!engine.mixRecording) {
+      engine.startMixRecording();
+      return;
+    }
+    const res = await engine.stopMixRecording();
+    if (!res) {
+      toast('Zapis jest pusty — nic do zapisania');
+      return;
+    }
+    const name = `sampler-${timestamp()}.${res.ext}`;
+    downloadBlob(res.blob, name);
+    toast(`Zapisano ${name} (${res.label}, ${(res.blob.size / 1048576).toFixed(2)} MB)`);
+  }
+  ticks.push(() => {
+    const rec = engine.mixRecording;
+    bRecMix.setLit(rec && Math.floor(performance.now() / 500) % 2 === 0);
+    bRecMix.setText(rec ? '■ ' + fmtClock(engine.mixElapsed()) : 'REC MIX');
+  });
+
+  for (const b of [bGlow, bTap, bStop, bRecMix]) {
+    b.el.style.width = `calc(${b === bTap ? 58 : b === bRecMix ? 64 : 54} * var(--u))`;
     b.el.style.flex = 'none';
   }
 
@@ -253,7 +276,8 @@ function mountSampler(root, engine) {
     keyKnob.el,
     bGlow.el,
     bTap.el,
-    bStop.el
+    bStop.el,
+    bRecMix.el
   );
 
   // ---------- siatka padów ----------
@@ -371,6 +395,11 @@ function mountSampler(root, engine) {
       if (!e.repeat) engine.deckTogglePlay();
       return;
     }
+    if (e.code === 'KeyM') {
+      e.preventDefault();
+      if (!e.repeat) toggleMixRecording();
+      return;
+    }
     if (e.code === 'Escape') {
       if (!e.repeat) engine.stopAll();
       return;
@@ -404,6 +433,30 @@ function mountSampler(root, engine) {
 
   // pierwsze pełne rozmieszczenie po zmianie rozmiaru okna
   window.addEventListener('resize', () => deck.redraw());
+}
+
+function fmtClock(sec) {
+  const s = Math.floor(sec);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+function timestamp() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+/** Pobranie pliku w przeglądarce (link z atrybutem download). */
+function downloadBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.style.display = 'none';
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 /** Przeciągnij i upuść plik audio na element. */

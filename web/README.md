@@ -33,6 +33,7 @@ Dla GitHub Pages jest workflow `.github/workflows/pages.yml`
 | Scratch | przeciąganie po płycie po okręgu | – |
 | TEMPO / KEY | przeciąganie pokrętła (↑/→ więcej), kółko myszy, podwójne kliknięcie = reset | – |
 | Efekty FILTER / RES / DLY / REV | pokrętła na pasku FX (podwójne kliknięcie = reset) | – |
+| Zapis miksu do pliku | `REC MIX` (start / stop → plik się pobiera) | `M` |
 | Banki A–D | `SAVE`, potem bank = zapis; sam bank = wczytanie | – |
 | Wczytanie pliku | `FILE` / `LOAD` albo **przeciągnij plik audio** na kafelek REC lub deck | – |
 
@@ -45,6 +46,17 @@ Efekty działają na całym miksie (kafelki i deck), natywnymi węzłami Web Aud
 - **DLY TIME / FDBK / MIX** – delay zsynchronizowany z pokrętłem TEMPO (1/16, 1/8, 1/8 z kropką, 1/4),
   ze ściemnianiem powtórek; FDBK to sprzężenie zwrotne (0–90 %).
 - **REV MIX** – pogłos (konwolucja z generowaną odpowiedzią impulsową, ok. 2,2 s).
+
+## Zapis do pliku
+
+`REC MIX` nagrywa to, co słychać: kafelki, deck i efekty. Po zatrzymaniu przeglądarka pobiera plik
+`sampler-RRRRMMDD-GGMMSS.<ext>`. Format dobrany pod najlepszy stosunek jakości do rozmiaru:
+
+- **Opus 128 kb/s** (`.webm`, w niektórych przeglądarkach `.ogg`) – ok. 1 MB na minutę, jakość zbliżona do oryginału,
+- **AAC** (`.m4a`) – tylko w Safari, które nie koduje Opusa w MediaRecorderze.
+
+Pliki `.webm` z Opusem odtworzą m.in. Chrome, Firefox, Edge i VLC. W przeglądarkowym nagraniu
+brakuje metadanych długości, więc niektóre odtwarzacze nie pokazują czasu trwania ani nie pozwalają przewijać.
 
 ## Banki
 
