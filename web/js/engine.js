@@ -5,6 +5,16 @@ import { buildPads, BASE_BPM, finishSample } from './synth.js';
 import { FxChain } from './fx.js';
 
 export const MAX_SECONDS = 10; // kafelek REC (s)
+export const MAX_MEMBERS = 8; // ile dźwięków można zmiksować w jednym pojemniku
+export const BAKE_MAX_SECONDS = 12; // maks. długość zmiksowanego klocka
+export const PARAM_LIMITS = { vol: [0, 2], tempo: [0.5, 2], tone: [-1, 1] };
+const DEFAULT_PARAMS = Object.freeze({ vol: 1, tempo: 1, tone: 0 });
+
+/** Poziom wyjścia głównego: suwak 0..1, 0.8 = brak zmiany (0 dB), 1.0 ≈ +3,9 dB. */
+export function masterGainFor(v) {
+  const x = Math.max(0, Math.min(1, v)) / 0.8;
+  return x * x;
+}
 export const MIX_BITRATE = 128000; // b/s — Opus 128 kb/s ≈ 1 MB/min, jakość zbliżona do oryginału
 
 /** Formaty zapisu miksu wg stosunku jakości do rozmiaru (pierwszy obsługiwany wygrywa). */
@@ -51,14 +61,32 @@ class Slot {
   }
 }
 
+/** Pojemnik (klocek): miks kilku dźwięków wyrenderowany do nowej próbki. */
+class Block extends Slot {
+  constructor(index) {
+    super(index);
+    this.padId = Engine.BLOCK_ID_BASE + index;
+    /** @type {number[]} identyfikatory kafelków, z których powstaje miks */
+    this.members = [];
+  }
+}
+
 export class Engine extends Emitter {
   static SLOT_ID_BASE = 100;
+  static BLOCK_ID_BASE = 200;
 
   constructor() {
     super();
     /** @type {{id:number,label:string,loop:boolean,color:string}[]} */
     this.pads = [];
     this.slots = Array.from({ length: 4 }, (_, i) => new Slot(i));
+    this.blocks = Array.from({ length: 4 }, (_, i) => new Block(i));
+    /** Kopie próbek presetów (do renderowania pojemników); worklet ma własne. */
+    this.padData = new Map();
+    /** Parametry per kafelek: głośność, tempo, barwa. Brak wpisu = ustawienia domyślne. */
+    this.padParams = new Map();
+    this.master = null;
+    this.masterV = 0.8;
     this.activeLoops = new Set();
     this.loopModes = new Set();
 
@@ -121,12 +149,16 @@ export class Engine extends Emitter {
       });
       this.node.port.onmessage = (e) => this._onWorkletMessage(e.data);
       this.fx = new FxChain(this.ctx);
+      this.master = this.ctx.createGain();
+      this.master.gain.value = masterGainFor(this.masterV);
       this.node.connect(this.fx.input);
-      this.fx.output.connect(this.ctx.destination);
+      this.fx.output.connect(this.master);
+      this.master.connect(this.ctx.destination);
 
       const pads = buildPads(this.sr);
       for (const p of pads) {
         this.pads.push({ id: p.id, label: p.label, loop: p.loop, color: p.color });
+        this.padData.set(p.id, p.data.slice());
         this._send({ t: 'pad', id: p.id, data: p.data }, [p.data.buffer]);
         if (p.loop) this.loopModes.add(p.id);
       }
@@ -145,8 +177,10 @@ export class Engine extends Emitter {
       this._starting = null;
       this.node = null;
       this.fx = null;
+      this.master = null;
       this.ctx = null;
       this.pads = [];
+      this.padData = new Map();
       this.loopModes = new Set();
       ctx.close().catch(() => {});
       throw err;
@@ -196,6 +230,44 @@ export class Engine extends Emitter {
     this._send({ t: 'pitch', v: ratio });
   }
 
+  /** Główny suwak głośności (0..1; 0.8 = bez zmiany). Wpływa też na nagrywany miks. */
+  setMaster(v) {
+    this.masterV = Math.max(0, Math.min(1, v));
+    if (this.master) {
+      const g = this.master.gain;
+      const t = this.ctx.currentTime;
+      if (g.setTargetAtTime) g.setTargetAtTime(masterGainFor(this.masterV), t, 0.02);
+      else g.value = masterGainFor(this.masterV);
+    }
+  }
+
+  // ---------- parametry per kafelek (preset, REC lub pojemnik) ----------
+
+  getParams(id) {
+    return this.padParams.get(id) || DEFAULT_PARAMS;
+  }
+
+  /** key: 'vol' | 'tempo' | 'tone'. Działa na żywo, także na grającej pętli. */
+  setParam(id, key, value) {
+    const [lo, hi] = PARAM_LIMITS[key];
+    const cur = { ...this.getParams(id), [key]: Math.max(lo, Math.min(hi, value)) };
+    this._storeParams(id, cur);
+    this.emit('params');
+  }
+
+  resetParams(id) {
+    this._storeParams(id, DEFAULT_PARAMS);
+    this.emit('params');
+  }
+
+  /** Ustawia komplet parametrów (np. z banku). */
+  _storeParams(id, p) {
+    const isDefault = p.vol === 1 && p.tempo === 1 && p.tone === 0;
+    if (isDefault) this.padParams.delete(id);
+    else this.padParams.set(id, { vol: p.vol, tempo: p.tempo, tone: p.tone });
+    this._send({ t: 'pparam', id, vol: p.vol, tempo: p.tempo, tone: p.tone });
+  }
+
   /** Dotknięcie kafelka presetu: w trybie pętli włącza/wyłącza pętlę, inaczej odpala jednorazowo. */
   press(pad) {
     if (this.loopModes.has(pad.id)) this._toggleLoop(pad.id, true);
@@ -234,7 +306,89 @@ export class Engine extends Emitter {
     slot.loop = false;
     slot.seconds = 0;
     slot.data = null;
+    if (slot.members) slot.members = [];
     slot.status = 'empty';
+    this.emit('slots');
+  }
+
+  // ---------- pojemniki: miks kilku dźwięków do jednego klocka ----------
+
+  /** Dane próbki kafelka o danym id (preset, REC lub pojemnik) albo null. */
+  getPadData(id) {
+    if (this.padData.has(id)) return this.padData.get(id);
+    const sl = this.slots.find((x) => x.padId === id) || this.blocks.find((x) => x.padId === id);
+    return sl && sl.status === 'ready' ? sl.data : null;
+  }
+
+  isLoopPad(id) {
+    const sl = this.slots.find((x) => x.padId === id) || this.blocks.find((x) => x.padId === id);
+    return sl ? sl.loop : this.loopModes.has(id);
+  }
+
+  /** Dodaje/usuwa kafelek z listy składników pojemnika. */
+  toggleMember(block, id) {
+    if (id === block.padId) return;
+    const i = block.members.indexOf(id);
+    if (i >= 0) block.members.splice(i, 1);
+    else if (block.members.length >= MAX_MEMBERS) {
+      this.emit('toast', `Pojemnik mieści maks. ${MAX_MEMBERS} dźwięków`);
+      return;
+    } else block.members.push(id);
+    this.emit('slots');
+  }
+
+  /**
+   * Miksuje składniki pojemnika (z ich ustawieniami VOL / TEMPO / TONE i trybem one-shot/pętla)
+   * w nowy klocek. Renderowanie offline tym samym procesorem, który gra na żywo.
+   */
+  async bakeBlock(block) {
+    if (block.status === 'loading' || block.status === 'recording') return;
+    const items = block.members
+      .filter((id) => id !== block.padId && this.getPadData(id))
+      .map((id) => ({ id, data: this.getPadData(id), pr: this.getParams(id), loop: this.isLoopPad(id) }));
+    if (!items.length) {
+      this.emit('toast', 'Najpierw dodaj dźwięki do pojemnika (przycisk +)');
+      return;
+    }
+    const OCtx = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    if (!OCtx) {
+      this.emit('toast', 'Ta przeglądarka nie obsługuje renderowania offline');
+      return;
+    }
+
+    this._stopVoices(block.padId);
+    const prevStatus = block.status;
+    block.status = 'loading';
+    this.emit('slots');
+    try {
+      let frames = 0;
+      for (const it of items) frames = Math.max(frames, Math.round(it.data.length / it.pr.tempo));
+      frames = Math.max(this.sr * MIN_SAMPLE_SECONDS, Math.min(frames, Math.floor(this.sr * BAKE_MAX_SECONDS)));
+
+      const octx = new OCtx(1, frames, this.sr);
+      await octx.audioWorklet.addModule(new URL('js/worklet.js', document.baseURI).href);
+      const node = new AudioWorkletNode(octx, 'sampler', {
+        numberOfInputs: 0,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+        processorOptions: {
+          pads: items.map((it) => ({ id: it.id, data: it.data.slice() })),
+          params: items.map((it) => ({ id: it.id, vol: it.pr.vol, tempo: it.pr.tempo, tone: it.pr.tone })),
+          start: items.map((it) => ({ id: it.id, loop: it.loop })),
+        },
+      });
+      node.connect(octx.destination);
+      const rendered = await octx.startRendering();
+      const out = new Float32Array(rendered.getChannelData(0));
+      finishSample(out, this.sr);
+
+      block.loop = items.some((it) => it.loop);
+      this._completeSlot(block, out, `MIX ${block.index + 1}`);
+    } catch (e) {
+      console.error(e);
+      block.status = prevStatus === 'ready' ? 'ready' : 'empty';
+      this.emit('toast', 'Nie udało się zmiksować pojemnika');
+    }
     this.emit('slots');
   }
 
@@ -369,7 +523,7 @@ export class Engine extends Emitter {
     try {
       if (!this._recDest) {
         this._recDest = this.ctx.createMediaStreamDestination();
-        this.fx.output.connect(this._recDest);
+        this.master.connect(this._recDest); // nagranie uwzględnia główny suwak
       }
       const mr = new MediaRecorder(this._recDest.stream, {
         mimeType: fmt.mime,

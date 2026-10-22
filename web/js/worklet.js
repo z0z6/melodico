@@ -19,6 +19,8 @@ const DECK_GAIN = 0.85;
 const MAX_SCRATCH_RATE = 8.0;
 const SCRATCH_SMOOTH_FRAMES = 768; // w oryginale: 256 próbek bloku * 3
 const STATUS_INTERVAL_S = 0.016;
+const TONE_HZ = 900; // punkt podziału korekcji barwy (pochylenie widma)
+const DEFAULT_PP = { vol: 1, tempo: 1, tone: 0 }; // parametry per kafelek: głośność, tempo, barwa
 
 const HANN = new Float32Array(GRAIN);
 for (let i = 0; i < GRAIN; i++) HANN[i] = 0.5 * (1.0 - Math.cos((2.0 * Math.PI * i) / GRAIN));
@@ -29,8 +31,11 @@ function softClip(x) {
 }
 
 class Voice {
-  constructor(padId, data, loop, gain, syncMaster) {
+  constructor(padId, data, loop, gain, syncMaster, granular, vol) {
     this.padId = padId;
+    this.granular = granular; // one-shot z własnym tempem odtwarzany granularnie (bez zmiany wysokości)
+    this.vol = vol; // wygładzana głośność kafelka
+    this.low = 0; // stan filtra korekcji barwy
     this.data = data;
     this.loop = loop;
     this.gain = gain;
@@ -50,9 +55,12 @@ class Voice {
 }
 
 class SamplerProcessor extends AudioWorkletProcessor {
-  constructor() {
+  constructor(options) {
     super();
     this.sr = sampleRate;
+    this.toneA = 1 - Math.exp((-2 * Math.PI * TONE_HZ) / sampleRate);
+    this.pp = new Map(); // padId -> { vol, tempo, tone }
+    this.offline = false;
     this.barFrames = Math.round(this.sr * 2); // 1 takt przy 120 BPM
     this.masterWrap = this.barFrames * 8;
     this.framesPerRev = this.sr * 1.8; // 33 1/3 obr./min
@@ -80,6 +88,19 @@ class SamplerProcessor extends AudioWorkletProcessor {
     this.scratch = new Float32Array(128);
 
     this.port.onmessage = (e) => this.onMessage(e.data);
+
+    // tryb renderowania offline (BAKE pojemnika): wszystko przychodzi w processorOptions
+    const o = options && options.processorOptions;
+    if (o) {
+      this.offline = true;
+      for (const p of o.pads || []) this.pads.set(p.id, p.data);
+      for (const r of o.params || []) this.pp.set(r.id, { vol: r.vol, tempo: r.tempo, tone: r.tone });
+      for (const s of o.start || []) this.onMessage({ t: 'start', id: s.id, loop: s.loop, syncMaster: false });
+    }
+  }
+
+  getPP(id) {
+    return this.pp.get(id) || DEFAULT_PP;
   }
 
   // ---------------- komendy z wątku UI ----------------
@@ -100,9 +121,14 @@ class SamplerProcessor extends AudioWorkletProcessor {
           if (idx < 0) break;
           this.voices.splice(idx, 1);
         }
-        this.voices.push(new Voice(m.id, data, !!m.loop, GAIN, !!m.syncMaster));
+        const pp = this.getPP(m.id);
+        const granular = !m.loop && Math.abs(pp.tempo - 1) > 0.005;
+        this.voices.push(new Voice(m.id, data, !!m.loop, GAIN, !!m.syncMaster, granular, pp.vol));
         break;
       }
+      case 'pparam':
+        this.pp.set(m.id, { vol: m.vol, tempo: m.tempo, tone: m.tone });
+        break;
       case 'stop':
         for (const v of this.voices) if (v.padId === m.id) v.stopping = true;
         break;
@@ -167,6 +193,7 @@ class SamplerProcessor extends AudioWorkletProcessor {
   }
 
   postStatus(force) {
+    if (this.offline) return;
     this.port.postMessage({
       t: 'status',
       level: this.peak,
@@ -194,8 +221,10 @@ class SamplerProcessor extends AudioWorkletProcessor {
     let anyDone = false;
     for (const v of this.voices) {
       if (v.done) continue;
-      if (v.loop) this.mixLoop(v, buf, frames, tempo, pitch);
-      else this.mixOneShot(v, buf, frames, pitch);
+      const pp = this.getPP(v.padId);
+      if (v.loop) this.mixGranular(v, buf, frames, tempo * pp.tempo, pitch, pp, true);
+      else if (v.granular) this.mixGranular(v, buf, frames, pp.tempo, pitch, pp, false);
+      else this.mixOneShot(v, buf, frames, pitch, pp);
       if (v.done) anyDone = true;
     }
     if (anyDone) this.voices = this.voices.filter((v) => !v.done);
@@ -219,10 +248,23 @@ class SamplerProcessor extends AudioWorkletProcessor {
     return true;
   }
 
-  mixOneShot(v, buf, frames, pitch) {
+  mixOneShot(v, buf, frames, pitch, pp) {
     const data = v.data;
     const n = data.length;
     let p = v.pos;
+
+    // głośność (wygładzona w obrębie bloku) i barwa (pochylenie widma wokół TONE_HZ)
+    const g1 = pp.vol;
+    const dg = (g1 - v.vol) / frames;
+    let g = v.vol;
+    v.vol = g1;
+    const tone = pp.tone;
+    const toneOn = tone > 0.01 || tone < -0.01;
+    const gl = Math.pow(2, -tone * 1.5);
+    const gh = Math.pow(2, tone * 1.5);
+    const A = this.toneA;
+    let low = v.low;
+
     for (let i = 0; i < frames; i++) {
       const i0 = p | 0;
       if (i0 >= n - 1) {
@@ -230,7 +272,10 @@ class SamplerProcessor extends AudioWorkletProcessor {
         break;
       }
       const f = p - i0;
-      let s = (data[i0] * (1 - f) + data[i0 + 1] * f) * v.gain;
+      g += dg;
+      let s = (data[i0] * (1 - f) + data[i0 + 1] * f) * v.gain * g;
+      low += A * (s - low);
+      if (toneOn) s = low * gl + (s - low) * gh;
       if (v.stopping) {
         s *= v.fadeLeft / FADE_OUT;
         if (--v.fadeLeft < 0) {
@@ -242,44 +287,64 @@ class SamplerProcessor extends AudioWorkletProcessor {
       p += pitch;
     }
     v.pos = p;
+    v.low = low;
   }
 
-  mixLoop(v, buf, frames, tempo, pitch) {
+  /**
+   * Granularny time-stretch + pitch-shift. `wrap` = true: pętla (zawijanie), false: pojedynczy
+   * przebieg (one-shot z własnym tempem; kończy się, gdy zegar treści dojdzie do końca próbki).
+   */
+  mixGranular(v, buf, frames, tempo, pitch, pp, wrap) {
     const data = v.data;
     const n = data.length;
-    const nd = n;
 
     if (!v.started) {
-      v.contentPos = v.syncMaster ? this.masterPos % nd : 0;
+      v.contentPos = wrap && v.syncMaster ? this.masterPos % n : 0;
       // grain 0 jest w szczycie okna, grain 1 dopiero startuje: suma okien = 1
       v.gPos[0] = v.contentPos;
       v.gAge[0] = HOP;
       v.gPos[1] = v.contentPos;
       v.gAge[1] = 0;
-      v.fadeIn = FADE_IN;
+      v.fadeIn = wrap ? FADE_IN : 0;
       v.started = true;
     }
+
+    const g1 = pp.vol;
+    const dg = (g1 - v.vol) / frames;
+    let gain = v.vol;
+    v.vol = g1;
+    const tone = pp.tone;
+    const toneOn = tone > 0.01 || tone < -0.01;
+    const gl = Math.pow(2, -tone * 1.5);
+    const gh = Math.pow(2, tone * 1.5);
+    const A = this.toneA;
+    let low = v.low;
 
     const gPos = v.gPos;
     const gAge = v.gAge;
     for (let i = 0; i < frames; i++) {
+      if (!wrap && v.contentPos >= n) {
+        v.done = true;
+        break;
+      }
       let acc = 0;
       for (let g = 0; g < 2; g++) {
         let p = gPos[g];
         const i0 = p | 0;
-        const i1 = i0 + 1 >= n ? 0 : i0 + 1;
+        const x0 = i0 < n ? data[i0] : 0;
+        const x1 = i0 + 1 < n ? data[i0 + 1] : wrap ? data[0] : 0;
         const f = p - i0;
-        acc += (data[i0] * (1 - f) + data[i1] * f) * HANN[gAge[g]];
+        acc += (x0 * (1 - f) + x1 * f) * HANN[gAge[g]];
 
         p += pitch;
-        if (p >= nd) p -= nd;
+        if (wrap && p >= n) p -= n;
         gPos[g] = p;
 
         const age = gAge[g] + 1;
         if (age >= GRAIN) {
           // nowy grain startuje w miejscu, które zegar treści osiągnie w następnej próbce
           let np = v.contentPos + tempo;
-          if (np >= nd) np -= nd;
+          if (wrap && np >= n) np -= n;
           gPos[g] = np;
           gAge[g] = 0;
         } else {
@@ -287,9 +352,12 @@ class SamplerProcessor extends AudioWorkletProcessor {
         }
       }
       v.contentPos += tempo;
-      if (v.contentPos >= nd) v.contentPos -= nd;
+      if (wrap && v.contentPos >= n) v.contentPos -= n;
 
-      let s = acc * v.gain;
+      gain += dg;
+      let s = acc * v.gain * gain;
+      low += A * (s - low);
+      if (toneOn) s = low * gl + (s - low) * gh;
       if (v.fadeIn > 0) {
         s *= 1 - v.fadeIn / FADE_IN;
         v.fadeIn--;
@@ -303,6 +371,7 @@ class SamplerProcessor extends AudioWorkletProcessor {
       }
       buf[i] += s;
     }
+    v.low = low;
   }
 
   /** Deck: płynna prędkość odtwarzania + scratch sterowany pozycją palca. */

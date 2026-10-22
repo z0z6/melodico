@@ -21,7 +21,8 @@ export function createPad({ label, color, keyHint, doubleTapEnabled, onPress, on
   const labelEl = h('div', 'plabel', { text: label });
   const tagEl = h('div', 'ptag');
   el.append(h('div', 'led'), labelEl, tagEl);
-  if (keyHint) el.append(h('div', 'khint', { text: keyHint }));
+  const hintEl = h('div', 'khint', { text: keyHint || '' });
+  el.append(hintEl);
 
   let enabled = true;
   let lastDown = 0;
@@ -72,6 +73,20 @@ export function createPad({ label, color, keyHint, doubleTapEnabled, onPress, on
     press,
     release,
     setColor,
+    setLabel(t) {
+      if (labelEl.textContent !== t) labelEl.textContent = t;
+    },
+    setKeyHint(t) {
+      hintEl.textContent = t || '';
+    },
+    /** Kafelek wybrany do edycji (pasek PAD). */
+    setSelected(on) {
+      el.classList.toggle('selected', !!on);
+    },
+    /** Kafelek jest składnikiem edytowanego pojemnika. */
+    setMember(on) {
+      el.classList.toggle('member', !!on);
+    },
     setTag(t) {
       const v = t || '';
       if (tagEl.textContent !== v) tagEl.textContent = v;

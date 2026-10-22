@@ -315,8 +315,50 @@ html, body {
 .transport { display: flex; gap: calc(4 * var(--u)); height: calc(26 * var(--u)); flex: none; }
 .transport .cbtn { flex: 1; font-size: calc(8 * var(--u)); letter-spacing: 0; }
 
+/* -------------------------------------------------- zaznaczenia i pojemniki */
+
+.pad.selected { outline: calc(1.5 * var(--u)) solid rgb(255 255 255 / 0.6); outline-offset: calc(-1.5 * var(--u)); }
+.pad.member {
+  outline: calc(2 * var(--u)) dashed var(--cyan);
+  outline-offset: calc(-3 * var(--u));
+}
+.pad.member::before { opacity: 0.75; }
+.pads-panel.adding .pad:not(.disabled) { cursor: copy; }
+.slot.block .pad .plabel { color: #e8dcc0; }
+
+/* ----------------------------------------------------- pasek PAD (VOL/TEMPO/TONE) */
+
+.padbar {
+  flex: none;
+  min-height: calc(46 * var(--u));
+  display: flex;
+  align-items: center;
+  gap: calc(8 * var(--u));
+  padding: calc(4 * var(--u)) calc(10 * var(--u));
+  border-radius: calc(8 * var(--u));
+}
+.padname {
+  min-width: calc(66 * var(--u));
+  max-width: calc(96 * var(--u));
+  padding: calc(3 * var(--u)) calc(6 * var(--u));
+  border: 1px solid var(--bezel);
+  border-radius: calc(4 * var(--u));
+  background: #050607;
+  font-size: calc(10 * var(--u));
+  font-weight: 700;
+  letter-spacing: calc(1 * var(--u));
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.topbar .fader.master { width: calc(150 * var(--u)); flex: none; }
+.topbar .fader.master .flabel { width: calc(42 * var(--u)); }
+.topbar .fader.master .fread { width: calc(40 * var(--u)); }
+
 /* ------------------------------------------------------------------ pasek FX */
 
+.fxbar[hidden] { display: none; }
 .fxbar {
   flex: none;
   min-height: calc(46 * var(--u));
@@ -432,7 +474,9 @@ html, body {
     grid-auto-rows: calc(58 * var(--u));
   }
   .pad .plabel { font-size: calc(11 * var(--u)); }
-  .pad-spacer { display: block; grid-column: span 1; } /* 23 presetów = 5 pełnych rzędów + 3 */
+  .pad-spacer { display: block; grid-column: span 2; } /* 18 kafelków = 4 rzędy + 2; dolny rząd od nowej linii */
+  .padbar { flex: none; flex-wrap: wrap; row-gap: calc(6 * var(--u)); }
+  .topbar .fader.master { width: 100%; order: 8; }
   .fxbar { flex: none; flex-wrap: wrap; row-gap: calc(6 * var(--u)); }
   .banks { margin-left: 0; width: 100%; justify-content: flex-start; }
   .deck { height: calc(330 * var(--u)); flex: none; }
